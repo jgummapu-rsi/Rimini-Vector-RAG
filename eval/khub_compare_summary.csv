@@ -1,0 +1,6 @@
+,ours,khub,delta (ours - khub)
+faithfulness,0.8417,0.8073,0.0344
+answer_relevancy,0.6434,0.5873,0.0561
+answer_correctness,0.573,0.6014,-0.0284
+non_llm_context_precision_with_reference,0.2158,0.2583,-0.0425
+non_llm_context_recall,0.2417,0.35,-0.1083

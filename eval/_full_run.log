@@ -1,0 +1,38 @@
+[INFO] Opening C:\Users\jgummapu\.ir_datasets\beir\scifact/docs.pklz4\bin with direct file access
+corpus: 5183 docs | queries (pre-filter): 300
+
+queries (with a relevant doc in corpus): 300
+
+reusing eval tenant 6a7578a9dcbd74632f4c62cb (scifact-eval-postgres-benchmark)
+wiped 139 stale vector_chunks rows for this tenant
+chunking corpus (real chunker)...
+  14722 chunks
+
+embedding chunks (real MiniLM)...
+  embedded 128/14722  embedded 1408/14722  embedded 2688/14722  embedded 3968/14722  embedded 5248/14722  embedded 6528/14722  embedded 7808/14722  embedded 9088/14722  embedded 10368/14722  embedded 11648/14722  embedded 12928/14722  embedded 14208/14722
+  embedded in 352s
+
+upserting into real Postgres/pgvector...
+  upserted 500/14722  upserted 1000/14722  upserted 1500/14722  upserted 2000/14722  upserted 2500/14722  upserted 3000/14722  upserted 3500/14722  upserted 4000/14722  upserted 4500/14722  upserted 5000/14722  upserted 5500/14722  upserted 6000/14722  upserted 6500/14722  upserted 7000/14722  upserted 7500/14722  upserted 8000/14722  upserted 8500/14722  upserted 9000/14722  upserted 9500/14722  upserted 10000/14722  upserted 10500/14722  upserted 11000/14722  upserted 11500/14722  upserted 12000/14722  upserted 12500/14722  upserted 13000/14722  upserted 13500/14722  upserted 14000/14722  upserted 14500/14722
+  14722 chunks upserted in 28s (pgvector count for tenant: 14722)
+
+running 300 queries through real search() (top_k=10, hybrid)...
+  20/300  40/300  60/300  80/300  100/300  120/300  140/300  160/300  180/300  200/300  220/300  240/300  260/300  280/300  300/300
+  queried in 3s
+
+=== HYBRID (real pgvector search: dense HNSW + BM25 RRF fusion) ===
+metric         score
+recall@1      0.5587
+recall@3      0.7208
+recall@5      0.7532
+recall@10     0.8029
+ndcg@1        0.5767
+ndcg@3        0.6633
+ndcg@5        0.6770
+ndcg@10       0.6948
+mrr@10        0.6658
+
+results written -> eval/retrieval_postgres_results.xlsx
+
+Note: search() fetches only the top-10 CHUNKS per query (real production behavior). If >1 of those chunks come from the same document, the deduped doc list is shorter than 10, which caps recall@10 below what a larger candidate pool would find — this is expected, not a bug.
+Reference: published all-MiniLM-L6-v2 on SciFact is ~nDCG@10 0.64; BM25 is ~nDCG@10 0.66. Numbers in that range mean the harness is honest.

@@ -1,0 +1,16 @@
+# data & secrets
+data/
+.env
+.webui_secret_key
+.claude/settings.local.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-openwebui/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

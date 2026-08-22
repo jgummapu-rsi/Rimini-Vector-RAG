@@ -1,0 +1,9 @@
+tenant 6a7578a9dcbd74632f4c62cb | 14722 vectors (bge-base 768) | reranker=Xenova/ms-marco-MiniLM-L-6-v2
+
+[INFO] Opening C:\Users\jgummapu\.ir_datasets\beir\scifact/docs.pklz4\bin with direct file access
+queries: 300
+
+hybrid pool=20   recall@10=0.8780 ndcg@10=0.7375 mrr@10=0.7014 (237s)
+hybrid pool=50   recall@10=0.8494 ndcg@10=0.7136 mrr@10=0.6807 (555s)
+hybrid pool=100  recall@10=0.8194 ndcg@10=0.7029 mrr@10=0.6757 (1035s)
+dense  pool=20   recall@10=0.8780 ndcg@10=0.7375 mrr@10=0.7014 (179s)

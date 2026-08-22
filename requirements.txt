@@ -1,0 +1,42 @@
+# --- Day 1: API + storage spine ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+
+# --- Day 2: parsing / extraction / chunking ---
+# PDF: pure-Python stack (no MSVC runtime needed on Windows).
+#   pdfplumber -> text + structured tables; pypdfium2 -> page/figure rasterization.
+pdfplumber==0.11.4
+pypdfium2==4.30.0
+python-docx==1.1.2
+openpyxl==3.1.5
+pandas==2.2.3
+xlrd==2.0.1
+pillow==11.1.0
+tiktoken==0.8.0
+striprtf==0.0.29
+lxml==5.3.0
+
+# --- Day 3: embeddings + vector store ---
+numpy==2.2.1
+# Hybrid retrieval: BM25 lexical scoring fused with dense cosine (pure Python, no
+# compiled deps).
+rank-bm25==0.2.2
+# Real local embeddings: all-MiniLM-L6-v2 via ONNX (no torch, no compiler).
+onnxruntime==1.20.1
+tokenizers==0.21.0
+huggingface_hub==0.27.0
+# Supplies the MSVC C++ runtime DLLs this Windows box lacks (needed by onnxruntime).
+msvc-runtime==14.44.35112
+
+# --- Postgres + pgvector backends ---
+psycopg2-binary==2.9.10   # binary wheel avoids needing MSVC + libpq headers on Windows
+pgvector==0.3.6           # pgvector.psycopg2.register_vector: list/np.ndarray <-> `vector`
+
+# --- semantic answer cache (optional; only imported when REDIS_URL is set) ---
+# redis-py ships the RediSearch command helpers used for vector KNN; needs a
+# Redis with the search module (Redis Stack / Redis 8+) at runtime.
+redis==5.2.1

@@ -1,0 +1,16 @@
+-r requirements.txt
+
+# --- test-only ---
+pytest==8.3.4
+fpdf2==2.8.1        # synthesize small PDF fixtures in tests
+
+# --- demo notebook ---
+jupyter==1.1.1
+ipykernel==6.29.5
+notebook==7.3.2
+
+# --- RAG evaluation (eval/run_ragas.py + notebook Step 10) ---
+ragas==0.2.14
+langchain-openai==0.2.14
+langchain-core==0.3.86
+rapidfuzz==3.14.5   # non-LLM string-similarity metrics (notebook Step 11)

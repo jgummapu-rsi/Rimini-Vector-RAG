@@ -1,0 +1,19 @@
+[INFO] Opening C:\Users\jgummapu\.ir_datasets\beir\scifact/docs.pklz4\bin with direct file access
+tenant 6a7578a9dcbd74632f4c62cb | 14722 vectors (bge-base 768) | reranker=llm (gpt-5-nano, listwise)
+
+  20/300  (307s elapsed)  40/300  (626s elapsed)  60/300  (947s elapsed)  80/300  (1275s elapsed)  100/300  (1626s elapsed)  120/300  (1931s elapsed)  140/300  (2282s elapsed)  160/300  (2636s elapsed)  180/300  (3007s elapsed)  200/300  (3296s elapsed)  220/300  (3602s elapsed)  240/300  (3919s elapsed)  260/300  (4245s elapsed)  280/300  (4555s elapsed)  300/300  (4886s elapsed)
+  queried in 4886s
+
+=== bge-base embed + llm (listwise) rerank  vs  bge-base + bge-reranker-base baseline ===
+metric        baseline      this     delta
+recall@1        0.5484    0.6549   +0.1065
+recall@3        0.7252    0.7818   +0.0566
+recall@5        0.7770    0.8441   +0.0671
+recall@10       0.8823    0.8887   +0.0063
+ndcg@1          0.5733    0.6900   +0.1167
+ndcg@3          0.6616    0.7449   +0.0833
+ndcg@5          0.6841    0.7701   +0.0860
+ndcg@10         0.7208    0.7858   +0.0650
+mrr@10          0.6757    0.7587   +0.0830
+
+results -> eval/retrieval_rerank_llm_results.xlsx

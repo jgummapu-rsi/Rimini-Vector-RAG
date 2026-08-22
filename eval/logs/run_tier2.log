@@ -1,0 +1,29 @@
+embedder=Xenova/bge-base-en-v1.5 max_tokens=512 | spec target=390 max=476 overlap=43 | rerank pool=50 mode=hybrid reranker=Xenova/bge-reranker-base
+
+dropping vector_chunks (had 14722 rows)
+[INFO] Opening C:\Users\jgummapu\.ir_datasets\beir\scifact/docs.pklz4\bin with direct file access
+corpus: 5183 docs | queries: 300
+chunks: 7126 (1.37 chunks/doc -- was 2.84 at MiniLM 256-tok sizing)
+
+embedding 7126 chunks (passage mode)...
+  embedded in 3079s
+  7126 chunks upserted (count=7126)
+
+querying 300 queries (pool=50, mode=hybrid)...
+  20/300 (537s)  40/300 (1075s)  60/300 (1601s)  80/300 (2148s)  100/300 (2703s)  120/300 (3269s)  140/300 (3816s)  160/300 (4359s)  180/300 (4906s)  200/300 (5448s)  220/300 (5977s)  240/300 (6499s)  260/300 (7036s)  280/300 (7579s)  300/300 (8158s)
+  queried in 8158s
+
+=== Tier 2 (bge auto-sized chunks + hybrid pool=50 + bge-reranker-base)  vs baseline recall@10=0.8823 ===
+recall@1     0.5801
+recall@3     0.7314
+recall@5     0.7903
+recall@10    0.8568   (-0.0255 vs base)
+ndcg@1       0.6033
+ndcg@3       0.6785
+ndcg@5       0.7023
+ndcg@10      0.7261
+mrr@10       0.6909
+
+still under 90%
+
+results -> eval/retrieval_tier2_results.xlsx
