@@ -1,0 +1,155 @@
+# Self-contained stack: clone the repo, `docker compose up`, and go. Postgres
+# (with the pgvector extension) and Redis (redis-stack, for the optional
+# semantic answer cache) are both part of this stack -- no external infra to
+# provision first.
+#
+# First run: open http://localhost:8000/ -- the onboarding page walks you
+# through creating an account (which transparently provisions a tenant + admin
+# user) and, if you want RAG answer generation / vision OCR, configuring your
+# LiteLLM gateway (this can also be done later, live, with no restart).
+#
+# `docker compose exec api python -m scripts.seed --platform` remains
+# available for setting up the platform/global-knowledge-base tenant, but is
+# no longer the primary way to get a tenant+admin+token -- the onboarding page
+# (POST /onboarding/register) is.
+
+# Pinned explicitly: Compose defaults the project name (and therefore every
+# volume name below) to the containing directory's name. This repo was
+# renamed from Enterprise-RAG to Rimini-Vector-RAG after data had already
+# accumulated in enterprise-rag_pgdata/redisdata/hf_cache/blob_data -- without
+# this pin, `docker compose up` after the rename silently created a second,
+# empty set of rimini-vector-rag_* volumes instead of reusing the originals.
+# Keep this pinned to `enterprise-rag` so the volumes below always resolve to
+# the ones that actually hold data, independent of what the folder is called.
+name: enterprise-rag
+
+x-app-env: &app-env
+  APP_ENV: docker
+  METADATA_BACKEND: postgres
+  BLOB_BACKEND: localfs
+  VECTOR_BACKEND: pgvector
+  QUEUE_BACKEND: postgres
+  DATA_DIR: data
+  DATABASE_URL: postgresql://postgres:postgres@postgres:5432/rag_ingestion
+  POSTGRES_POOL_MIN: 1
+  POSTGRES_POOL_MAX: 10
+  PGVECTOR_HNSW_M: 16
+  PGVECTOR_HNSW_EF_CONSTRUCTION: 64
+  PGVECTOR_HNSW_EF_SEARCH: 100
+  PGVECTOR_CANDIDATE_MULTIPLIER: 4
+  PGVECTOR_MIN_CANDIDATES: 50
+  PLATFORM_TENANT_ID: ""
+  # Left blank on purpose: the onboarding UI's gateway-config step (or
+  # POST /onboarding/gateway-config) sets these live, persisted to the
+  # system_config table -- no restart needed. Set them here instead if you'd
+  # rather bake in an org-wide default at deploy time.
+  LITELLM_BASE_URL: ""
+  LITELLM_API_KEY: ""
+  VISION_MODEL: claude-sonnet-5
+  CHAT_MODEL: gpt-5-nano
+  EMBEDDING_PROVIDER: minilm
+  EMBEDDING_DIM: "384"
+  RERANKER_PROVIDER: cross_encoder
+  REDIS_URL: redis://redis:6379
+  CACHE_INDEX_NAME: ans_idx
+  CACHE_SIMILARITY_THRESHOLD: "0.95"
+  CACHE_TTL_SECONDS: "86400"
+  MAX_UPLOAD_MB: "50"
+  MAX_ATTEMPTS: "5"
+  WORKER_POLL_SECONDS: "1.0"
+
+services:
+  postgres:
+    # Must be the pgvector image, not vanilla postgres -- app/adapters/pgvector/
+    # schema.sql runs `CREATE EXTENSION IF NOT EXISTS vector`, which needs the
+    # extension's .so already installed in the image.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag_ingestion
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag_ingestion"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    # Uncomment for host-side psql access:
+    # ports: ["5432:5432"]
+
+  redis:
+    # Must be redis-stack, not plain redis -- the optional answer cache
+    # (app/adapters/cache/redis_stack.py) needs FT.CREATE (RediSearch), which
+    # Ubuntu/Debian-packaged Redis 8 does not ship.
+    image: redis/redis-stack-server:latest
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    # Uncomment for host-side redis-cli access:
+    # ports: ["6379:6379"]
+
+  api:
+    build: .
+    command: ["uvicorn", "app.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      # The LiteLLM gateway configured via system_config/onboarding lives
+      # behind a Bastion tunnel that's only registered in the host's own
+      # /etc/hosts (see the Foundry developer guide) -- containers run in a
+      # separate network namespace and never see that entry, so route the
+      # gateway hostname to the host machine explicitly. Update the hostname
+      # here if the gateway address is ever regenerated.
+      - "litellm-gateway.delightfulpebble-214bf13c.eastus2.azurecontainerapps.io:host-gateway"
+    volumes:
+      # Shared with `worker`: MiniLM embedder + cross-encoder reranker download
+      # from the HF Hub lazily on first use. Whichever container downloads a
+      # model first, the other reuses it (huggingface_hub downloads to a temp
+      # file and atomically renames into the cache, so this is safe even if
+      # both containers' first calls race).
+      - hf_cache:/root/.cache/huggingface
+      # BLOB_BACKEND=localfs writes uploaded source files under DATA_DIR/blobs
+      # (-> /app/data/blobs here). Without this volume, `docker compose down`
+      # would silently lose ingested source files even though Postgres still
+      # has the derived chunks/vectors.
+      - blob_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.ingest.worker"]
+    environment: *app-env
+    extra_hosts:
+      - "litellm-gateway.delightfulpebble-214bf13c.eastus2.azurecontainerapps.io:host-gateway"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - blob_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # No HEALTHCHECK override: the worker is a long-running polling loop with
+    # no HTTP surface to probe (see app/worker.py). Plain container-restart-on
+    # -crash is the pragmatic baseline; a real liveness signal (e.g. a
+    # heartbeat row in the `metrics` table) is a reasonable follow-up.
+
+volumes:
+  pgdata:
+  redisdata:
+  hf_cache:
+  blob_data:

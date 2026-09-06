@@ -1,0 +1,13 @@
+.venv*/
+data/
+.git/
+tests/
+docs/
+eval/
+notebooks/
+*.ipynb
+__pycache__/
+*.pyc
+.env
+requirements-dev.txt
+.claude/

@@ -10,9 +10,9 @@ import io
 
 import pytest
 
-from app.config import Settings
-from app.container import build_container
-from app.domain.models import Role
+from app.shared.config import Settings
+from app.shared.container import build_container
+from app.shared.domain.models import Role
 
 
 @pytest.fixture
@@ -24,6 +24,11 @@ def settings(tmp_path):
         vector_backend="localfile",
         queue_backend="sqlite",
         embedding_provider="minilm",
+        # Both explicitly blank, not just api_key: Settings reads .env, and a
+        # developer's real LITELLM_BASE_URL there would otherwise leak into
+        # the test container, making onboarding_status()/gateway tests
+        # non-hermetic (see app.api.onboarding_routes).
+        litellm_base_url="",
         litellm_api_key="",
         vision_model="test-vision",
         max_attempts=3,
@@ -31,6 +36,13 @@ def settings(tmp_path):
         # reranking is opt-in per-test (see tests/test_query_rerank.py) so the
         # rest of the suite isn't coupled to a second real model download/load.
         reranker_provider="none",
+        # Cache OFF for the general suite, explicitly. Settings reads .env, so
+        # once a developer sets a real REDIS_URL there, every ingesting test
+        # would otherwise call invalidate_tenant() and write a permanent
+        # `ans_idx:gen:<tenant>` key -- for a throwaway tenant, in the REAL
+        # cache's namespace, with no TTL. Measured at ~29 orphaned keys per run.
+        # The answer-cache tests opt in deliberately, under their own index name.
+        redis_url="",
     )
 
 

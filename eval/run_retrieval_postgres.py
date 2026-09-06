@@ -3,10 +3,10 @@ in-memory shortcut, no LLM judge.
 
 Unlike `eval/run_retrieval.py` (which ranks with an in-memory numpy matmul),
 this script goes through the REAL storage + retrieval path: the actual
-pgvector adapter (`app.adapters.pgvector.vector_store.PgVectorStore`) backed by
+pgvector adapter (`app.shared.adapters.pgvector.vector_store.PgVectorStore`) backed by
 a real Postgres database, with the exact same `VectorStore.search()` method
 production traffic uses (SQL HNSW ANN query + real RRF fusion against BM25 via
-`app.adapters.shared.bm25`).
+`app.shared.adapters.bm25`).
 
 Dataset : BEIR SciFact (via ir_datasets) — 5,183 docs, 300 queries, gold qrels.
 Pipeline under test : real chunker + real MiniLM embeddings + real Postgres/
@@ -32,13 +32,13 @@ import numpy as np
 import pandas as pd
 
 import ir_datasets
-from app.adapters.postgres.db import transaction
-from app.config import settings
-from app.container import build_container
-from app.domain.models import Modality
-from app.pipeline.chunker import chunk_elements
-from app.pipeline.elements import Element
-from app.ports.vector_store import VectorPoint
+from app.shared.adapters.postgres.db import transaction
+from app.shared.config import settings
+from app.shared.container import build_container
+from app.shared.domain.models import Modality
+from app.ingest.pipeline.chunker import chunk_elements
+from app.ingest.pipeline.elements import Element
+from app.shared.ports.vector_store import VectorPoint
 
 K_VALUES = [1, 3, 5, 10]
 FETCH_K = 20  # chunks fetched BEFORE dedup to docs -- wider than the largest

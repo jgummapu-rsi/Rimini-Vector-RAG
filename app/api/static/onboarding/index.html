@@ -1,0 +1,326 @@
+<!doctype html>
+<!--
+  Onboarding landing page — the first screen anyone hitting this deployment
+  sees. Role choice (Developer / General User) -> email+password login or
+  registration (POST /onboarding/register|login, provisions a tenant+admin
+  user transparently) -> an optional LiteLLM gateway config gate -> either a
+  Developer reference screen (endpoints + example payloads) or a redirect into
+  the existing Document Trace UI (/ui/), already authenticated.
+
+  Deliberately one self-contained file: no build step, no framework, no npm
+  dependency -- same convention as app/api/static/trace/index.html. Served by
+  FastAPI at site root (/), same-origin, no CORS needed.
+
+  tenant_id/user_id are internal implementation details and are never
+  rendered anywhere on this page -- only the bearer api_token (which the
+  developer path genuinely needs, to call the API from outside this UI).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG Ingestion Layer</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --plane:          #0d0d0d;
+    --surface-1:      rgba(255,255,255,0.045);
+    --surface-solid:  #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --hairline:       rgba(251,226,50,0.16);
+    --series-1:       #3987e5;
+    --status-good:    #0ca30c;
+    --status-critical:#d03b3b;
+    --brand:          #FBE232;
+    --ink-on-brand:   #0A0A0A;
+  }
+  [hidden] { display: none !important; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background:
+      radial-gradient(1100px circle at 10% -10%, rgba(251,226,50,0.10), transparent 45%),
+      radial-gradient(900px circle at 100% 0%, rgba(57,135,229,0.12), transparent 45%),
+      #000;
+    color: var(--text-primary);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 480px; background: var(--surface-1);
+    border: 1px solid var(--hairline); border-radius: 18px; padding: 30px 32px;
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.45);
+  }
+  .mark { width: 30px; height: 6px; background: var(--brand); border-radius: 3px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0 0 6px; font-weight: 650; letter-spacing: -0.01em; }
+  p.sub { margin: 0 0 20px; color: var(--text-secondary); font-size: 13px; }
+  .choice { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+  .btn {
+    font: inherit; font-size: 14px; padding: 11px 16px; border-radius: 11px;
+    cursor: pointer; border: 1px solid var(--hairline);
+    background: var(--surface-1); color: var(--text-primary);
+    transition: border-color .15s, background .15s, transform .1s; text-align: left;
+    width: 100%;
+  }
+  .btn:hover { border-color: var(--series-1); background: rgba(255,255,255,0.075); }
+  .btn:active { transform: scale(0.98); }
+  .btn.primary { background: var(--brand); color: var(--ink-on-brand); border-color: transparent;
+                 font-weight: 600; text-align: center; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn:disabled { opacity: .55; cursor: default; transform: none; }
+  .btn b { display: block; font-size: 14px; }
+  .btn small { display: block; margin-top: 3px; color: var(--text-secondary); font-weight: 400; }
+  .disclaimer {
+    font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--hairline);
+    padding-top: 14px; line-height: 1.6;
+  }
+  .disclaimer code { color: var(--text-secondary); }
+  label { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+          color: var(--text-muted); font-weight: 600; margin: 14px 0 5px; }
+  label:first-of-type { margin-top: 0; }
+  input {
+    width: 100%; font: inherit; font-size: 13.5px; padding: 9px 11px; border-radius: 9px;
+    border: 1px solid var(--hairline); background: rgba(255,255,255,0.04);
+    color: var(--text-primary);
+  }
+  input:focus { outline: none; border-color: var(--series-1);
+                box-shadow: 0 0 0 3px rgba(57,135,229,0.22); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 4px; }
+  .tabs button {
+    flex: 1; font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px;
+    border-radius: 9px 9px 0 0; border: none; cursor: pointer;
+    background: transparent; color: var(--text-muted);
+  }
+  .tabs button.active { background: var(--surface-1); color: var(--text-primary); }
+  .err { color: var(--status-critical); font-size: 12.5px; margin: 10px 0 0; min-height: 1em; }
+  .hint { color: var(--text-muted); font-size: 12px; margin: 10px 0 0; }
+  .row { display: flex; gap: 8px; margin-top: 16px; }
+  .row .btn { width: auto; flex: 1; }
+  .field {
+    display: flex; align-items: center; gap: 8px; background: var(--plane);
+    border: 1px solid var(--hairline); border-radius: 9px; padding: 9px 11px;
+    font-size: 12.5px; word-break: break-all; margin-top: 6px;
+  }
+  .field code { flex: 1; color: var(--brand); }
+  .copybtn { flex: 0 0 auto; background: transparent; border: none; color: var(--text-secondary);
+             cursor: pointer; font: inherit; font-size: 12px; }
+  pre {
+    background: var(--plane); border: 1px solid var(--hairline); border-radius: 9px;
+    padding: 12px; font-size: 11.5px; overflow-x: auto; margin: 6px 0 16px;
+    color: var(--text-secondary); white-space: pre-wrap; word-break: break-all;
+  }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--text-muted); margin: 20px 0 4px; font-weight: 650; }
+  h2:first-of-type { margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="card" id="card"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let role = null;          // "developer" | "general"
+let apiToken = null;
+
+async function api(path, opts = {}) {
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  const res = await fetch(path, { ...opts, headers });
+  let body = {};
+  try { body = await res.json(); } catch (_e) { /* no body */ }
+  if (!res.ok) {
+    const err = new Error(body.detail || `request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+function render(html) { $("card").innerHTML = html; }
+
+// ------------------------------------------------------------- screen: welcome
+function screenWelcome() {
+  render(`
+    <div class="mark"></div>
+    <h1>Welcome</h1>
+    <p class="sub">How are you using this deployment?</p>
+    <div class="choice">
+      <button class="btn" id="pickDev">
+        <b>I'm a Developer</b>
+        <small>Get the API endpoints, your token, and example request payloads.</small>
+      </button>
+      <button class="btn" id="pickGeneral">
+        <b>I'm a General User</b>
+        <small>Go straight to the interactive ingestion &amp; ask UI.</small>
+      </button>
+    </div>
+    <div class="disclaimer">
+      This stack runs <code>Postgres</code> (with the <code>pgvector</code> extension) and
+      <code>Redis</code> (redis-stack) as part of Docker Compose. Both must be healthy for
+      ingestion and query to work — check with <code>docker compose ps</code> if something
+      looks stuck.
+    </div>
+  `);
+  $("pickDev").onclick = () => { role = "developer"; screenAuth(); };
+  $("pickGeneral").onclick = () => { role = "general"; screenAuth(); };
+}
+
+// ---------------------------------------------------------------- screen: auth
+function screenAuth() {
+  let mode = "register";
+
+  function draw() {
+    render(`
+      <div class="mark"></div>
+      <h1>${role === "developer" ? "Developer" : "General user"} sign-in</h1>
+      <p class="sub">Your account maps to a private tenant — nobody else sees your data.</p>
+      <div class="tabs">
+        <button id="tabRegister" class="${mode === "register" ? "active" : ""}">Create account</button>
+        <button id="tabLogin" class="${mode === "login" ? "active" : ""}">Log in</button>
+      </div>
+      <div style="background:var(--surface-1);border-radius:0 9px 9px 9px;padding:16px;">
+        ${mode === "register" ? `
+          <label for="dname">Name (optional)</label>
+          <input id="dname" placeholder="Acme Inc.">
+        ` : ``}
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" autocomplete="username">
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="••••••••" autocomplete="${mode === "register" ? "new-password" : "current-password"}">
+        <div class="row">
+          <button class="btn primary" id="submit">${mode === "register" ? "Create account" : "Log in"}</button>
+        </div>
+        <p class="err" id="err"></p>
+      </div>
+    `);
+    $("tabRegister").onclick = () => { mode = "register"; draw(); };
+    $("tabLogin").onclick = () => { mode = "login"; draw(); };
+    $("submit").onclick = () => submit();
+  }
+
+  async function submit() {
+    const email = $("email").value.trim();
+    const password = $("password").value;
+    const btn = $("submit"), err = $("err");
+    err.textContent = "";
+    btn.disabled = true;
+    try {
+      if (mode === "register") {
+        const display_name = $("dname").value.trim() || undefined;
+        const out = await api("/onboarding/register", {
+          method: "POST", body: JSON.stringify({ email, password, display_name }),
+        });
+        apiToken = out.api_token;
+      } else {
+        const out = await api("/onboarding/login", {
+          method: "POST", body: JSON.stringify({ email, password }),
+        });
+        apiToken = out.api_token;
+      }
+      await screenGatewayGateOrProceed();
+    } catch (e) {
+      if (e.status === 409) {
+        err.textContent = "An account with this email already exists — switch to Log in.";
+      } else if (e.status === 401) {
+        err.textContent = "Invalid email or password.";
+      } else {
+        err.textContent = e.message;
+      }
+      btn.disabled = false;
+    }
+  }
+
+  draw();
+}
+
+// ------------------------------------------------------- screen: gateway gate
+async function screenGatewayGateOrProceed() {
+  const status = await api("/onboarding/status");
+  if (status.litellm_configured) return proceed();
+  screenGateway();
+}
+
+function screenGateway() {
+  render(`
+    <div class="mark"></div>
+    <h1>Connect your LLM gateway</h1>
+    <p class="sub">Needed for answer generation (<code>/query</code>, <code>/chat</code>) and
+       vision OCR on scanned pages. Not needed for ingestion of text-native documents or for
+       search itself, which run on a local embedding model.</p>
+    <label for="baseUrl">LiteLLM base URL</label>
+    <input id="baseUrl" placeholder="https://your-litellm-gateway.example.com">
+    <label for="apiKey">LiteLLM API key</label>
+    <input id="apiKey" type="password" placeholder="sk-...">
+    <div class="row">
+      <button class="btn" id="skip">Skip for now</button>
+      <button class="btn primary" id="save">Save &amp; continue</button>
+    </div>
+    <p class="err" id="err"></p>
+  `);
+  $("skip").onclick = () => proceed();
+  $("save").onclick = async () => {
+    const err = $("err"), btn = $("save");
+    err.textContent = "";
+    btn.disabled = true;
+    try {
+      await api("/onboarding/gateway-config", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}` },
+        body: JSON.stringify({ base_url: $("baseUrl").value.trim(), api_key: $("apiKey").value.trim() }),
+      });
+      proceed();
+    } catch (e) {
+      err.textContent = e.message;
+      btn.disabled = false;
+    }
+  };
+}
+
+// --------------------------------------------------------------------- routing
+function proceed() {
+  if (role === "general") {
+    // Exact key the existing Trace UI (app/api/static/trace/index.html) reads
+    // on load -- pre-seeding it here skips its own paste-a-token gate.
+    localStorage.setItem("rag_trace_token", apiToken);
+    window.location.href = "/ui/";
+    return;
+  }
+  screenDeveloper();
+}
+
+function screenDeveloper() {
+  const origin = window.location.origin;
+  render(`
+    <div class="mark"></div>
+    <h1>You're set up</h1>
+    <p class="sub">Use this token to call the API directly. Keep it secret — it authenticates
+       as an admin of your tenant.</p>
+    <div class="field"><code id="tok">${apiToken}</code>
+      <button class="copybtn" id="copyTok">copy</button></div>
+
+    <h2>Ingest a document</h2>
+    <pre id="ingestEx">curl -X POST "${origin}/ingest" \\
+  -H "Authorization: Bearer ${apiToken}" \\
+  -F "file=@document.pdf" \\
+  -F "scope=tenant" \\
+  -F "visibility=private"</pre>
+
+    <h2>Ask a question</h2>
+    <pre id="queryEx">curl -X POST "${origin}/query" \\
+  -H "Authorization: Bearer ${apiToken}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"question": "What does this document say about revenue?", "top_k": 10}'</pre>
+
+    <p class="hint">Full route list, request/response shapes, and RBAC rules: see the OpenAPI
+      docs at <code>${origin}/docs</code>.</p>
+  `);
+  $("copyTok").onclick = () => navigator.clipboard.writeText(apiToken);
+}
+
+screenWelcome();
+</script>
+</body>
+</html>

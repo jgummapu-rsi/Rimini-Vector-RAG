@@ -282,14 +282,14 @@ benchmark corpus, but not a real document. This one runs entirely on 6 real file
 (`sample_pdfs/1.pdf`–`6.pdf`: research papers, a scanned lab form, a bank statement, a
 product one-pager, a textbook excerpt — 39 pages total, 16 of them scanned and requiring
 vision-model OCR), ingested through the actual production code path
-(`app.pipeline.runner.run_job`, the same call `app.worker` makes for a live upload), not
-a corpus-loading shortcut. Two things were measured: (1) does the reranker's recall@1
+(`app.ingest.pipeline.runner.run_job`, the same call `app.ingest.worker` makes for a live
+upload), not a corpus-loading shortcut. Two things were measured: (1) does the reranker's recall@1
 lift from Experiments 2/4/5 hold on a real, non-benchmark corpus, using a stronger
 1024-dim embedder; and (2) a second, independent head-to-head against khub, this time
 scored non-LLM (deterministic document-id matching) instead of RAGAS.
 
 **Setup:** embedder swapped to `bge-large-en-v1.5` (1024-dim) via the existing generic
-`OnnxEmbedder` adapter (`app/adapters/embedders/onnx_embedder.py`) — no new embedder
+`OnnxEmbedder` adapter (`app/shared/adapters/embedders/onnx_embedder.py`) — no new embedder
 code required. Ground truth: one test question generated (single LLM call) per
 ingested chunk, from that chunk's own text; the chunk it came from *is* its ground
 truth, nothing hand-labeled. Scoring is 100% deterministic from there — embed the
@@ -355,7 +355,7 @@ reranker default with real, non-synthetic evidence rather than identifying a new
 
 ## What actually shipped
 
-Tying every finding above to what the current default configuration (`app/config.py`)
+Tying every finding above to what the current default configuration (`app/shared/config.py`)
 actually runs:
 
 | Experiment | Finding | Shipped? |

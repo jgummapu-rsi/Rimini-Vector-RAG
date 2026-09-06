@@ -1,0 +1,1197 @@
+<!doctype html>
+<!--
+  Document Trace UI — a guided walkthrough of the ingestion pipeline, plus an
+  Ask view for querying the indexed documents.
+
+  Deliberately one self-contained file: no build step, no framework, no npm
+  dependency. This repo has no frontend toolchain and adding one to ship a
+  couple of internal pages would be a poor trade. Everything it needs is
+  already exposed by the API: /documents, /ingest, /jobs/{id}/trace,
+  /documents/{id}/chunks, /query (retrieval only), /answer (generation from
+  /query's chunks -- the Ask view chains both, same as any external caller
+  would).
+
+  Served by FastAPI at /ui/, so it is same-origin with the API and needs no
+  CORS. Ingest and Ask are two real "pages" (distinct hash routes, distinct
+  header identity, browser back/forward works) navigated from the left nav
+  rail, not tabs bolted onto one view.
+
+  THEME: Rimini Street brand only -- black (#0A0A0A) + yellow (#FBE232),
+  always, rendered as translucent frosted-glass panels (backdrop-filter blur)
+  over soft brand-colored glow blobs, so the blur has something to actually
+  refract. No light-mode fallback on purpose. Brand yellow is identity only
+  (nav active state, primary buttons, cache banner, the answer card's accent)
+  and is never used to encode data -- one dedicated blue hue (--series-1) is
+  reserved for that (ingest duration bars, the "live" retrieval banner), so
+  "this is a cache hit" (identity) and "this is pipeline-measured data" never
+  look like the same kind of fact. Citation scores are deliberately not shown
+  (raw retrieval-score units aren't legible to a general reader); rank order
+  (#1, #2, ...) already conveys most-to-least relevant.
+
+  COLOR NOTES (still computed results, not preferences):
+    * Duration bars are ONE measure, so they are one hue -- a single-series
+      bar needs no legend and must not ramp by value.
+    * Stage/status state uses the reserved status palette. good #0ca30c vs
+      critical #d03b3b measure CVD ΔE 4.1 (deuteranopia) -- i.e. red/green are
+      genuinely indistinguishable for a large minority of readers. Every
+      status therefore carries an ICON AND A TEXT LABEL; color is never the
+      only channel.
+    * All mark colors clear 3:1 against their surface.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document Trace</title>
+<style>
+  :root, .viz-root {
+    color-scheme: dark;
+    --plane:          #0d0d0d;   /* page background */
+    --surface-1:      rgba(255,255,255,0.045);  /* glass panel fill */
+    --surface-solid:  #1a1a19;   /* opaque dark, used only where translucency would break contrast */
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --hairline:       rgba(251,226,50,0.16);   /* yellow-tinted, branded */
+    --series-1:       #3987e5;   /* the one measure hue: ingest duration bars */
+    --track:          #184f95;
+    --status-good:    #0ca30c;
+    --status-critical:#d03b3b;
+    --brand:          #FBE232;   /* identity only — never a data mark */
+    --ink-on-brand:   #0A0A0A;
+  }
+
+  /* The `hidden` attribute must always win. Several elements below also set
+     `display` via a class/id rule (author-origin), which the CSS cascade lets
+     beat the user-agent's default `[hidden] { display:none }` -- without this,
+     toggling `.hidden = true` on those elements silently does nothing and two
+     "pages" render stacked on top of each other. */
+  [hidden] { display: none !important; }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #000; color: var(--text-primary);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: row;
+  }
+
+  /* --------------------------------------------------------------- navrail */
+  #navrail {
+    width: 76px; flex: 0 0 76px; background: #000; display: flex;
+    flex-direction: column; align-items: center; padding: 18px 0; gap: 6px;
+    border-right: 1px solid rgba(251,226,50,0.12);
+    box-shadow: 6px 0 28px rgba(0,0,0,0.45);
+    position: relative; z-index: 2;
+  }
+  #navrail .navmark { width: 26px; height: 26px; border-radius: 7px;
+                       background: var(--brand); margin-bottom: 16px; flex: 0 0 auto;
+                       box-shadow: 0 0 20px rgba(251,226,50,0.5); }
+  .navitem {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    width: 60px; padding: 10px 4px; border-radius: 14px; border: none;
+    background: transparent; color: var(--text-secondary); cursor: pointer;
+    font: inherit; font-size: 10.5px; font-weight: 650; letter-spacing: .01em;
+    transition: background .15s, color .15s, transform .15s;
+  }
+  .navitem svg { width: 20px; height: 20px; stroke: currentColor; }
+  .navitem:hover { background: rgba(251,226,50,0.10); color: var(--text-primary); transform: translateY(-1px); }
+  .navitem.active { background: var(--brand); color: var(--ink-on-brand);
+                    box-shadow: 0 0 0 1px rgba(251,226,50,.5), 0 0 24px rgba(251,226,50,.45); }
+
+  /* The page plane gets soft brand-colored glow blobs so the glass panels
+     floating over it (blurred, translucent) have something to actually
+     refract -- a flat color behind frosted glass looks the same as no blur. */
+  #shell {
+    flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background:
+      radial-gradient(1100px circle at 10% -10%, rgba(251,226,50,0.10), transparent 45%),
+      radial-gradient(900px circle at 100% 0%, rgba(57,135,229,0.12), transparent 45%),
+      var(--plane);
+  }
+
+  /* ---------------------------------------------------------------- header */
+  header {
+    display: flex; align-items: center; gap: 14px; padding: 14px 22px;
+    background: rgba(26,26,25,0.55); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--hairline);
+    flex: 0 0 auto;
+  }
+  header .mark { width: 6px; height: 26px; background: var(--brand); border-radius: 3px; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+  header .sp { flex: 1; }
+
+  .btn {
+    font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 9px;
+    cursor: pointer; border: 1px solid var(--hairline);
+    background: var(--surface-1); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: var(--text-primary);
+    transition: border-color .15s, background .15s, transform .1s;
+  }
+  .btn:hover { border-color: var(--baseline); background: rgba(255,255,255,0.075); }
+  .btn:active { transform: scale(0.96); }
+  .btn.primary { background: var(--brand); color: var(--ink-on-brand); border-color: transparent;
+                 font-weight: 600; backdrop-filter: none; box-shadow: 0 4px 18px rgba(251,226,50,0.25); }
+  .btn.primary:hover { background: var(--brand); filter: brightness(1.06); }
+  /* Destructive actions are ink + a hairline until confirmed — a permanently
+     red button invites the misclick it is warning about. */
+  .btn.danger { color: var(--status-critical); }
+  .btn.danger:hover { border-color: var(--status-critical); }
+  .btn.danger-solid { background: var(--status-critical); color: #fff;
+                      border-color: transparent; font-weight: 600; backdrop-filter: none; }
+  .btn:disabled { opacity: .6; cursor: default; transform: none; }
+
+  .titlerow { display: flex; align-items: flex-start; gap: 14px; }
+  .titlerow .grow { flex: 1; min-width: 0; }
+  .confirm { border: 1px solid var(--status-critical); border-radius: 12px;
+             padding: 13px 15px; margin: 16px 0 4px; background: var(--surface-1);
+             backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+  .confirm p { margin: 0 0 11px; font-size: 13px; }
+  .confirm .row { display: flex; gap: 8px; }
+
+  /* ----------------------------------------------------------------- layout */
+  .layout { flex: 1; display: flex; min-height: 0; }
+  @keyframes viewIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  .layout.entering { animation: viewIn .22s ease; }
+  .side {
+    width: 300px; flex: 0 0 300px; border-right: 1px solid var(--hairline);
+    background: rgba(26,26,25,0.4); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .main { flex: 1; overflow-y: auto; padding: 26px 30px 60px; min-width: 0; }
+  .wrap { max-width: 880px; }
+
+  /* -------------------------------------------------------------- dropzone */
+  #drop {
+    margin: 14px; padding: 22px 14px; border: 1.5px dashed var(--baseline);
+    border-radius: 12px; text-align: center; color: var(--text-secondary);
+    cursor: pointer; transition: border-color .15s, background .15s; flex: 0 0 auto;
+  }
+  #drop:hover, #drop.over { border-color: var(--series-1); background: var(--plane); }
+  #drop b { color: var(--text-primary); display: block; font-size: 13.5px; }
+  #drop small { display: block; margin-top: 5px; font-size: 11.5px; color: var(--text-muted); }
+
+  .scoperow { padding: 0 14px 12px; flex: 0 0 auto; }
+  .scoperow label { display: block; font-size: 11px; text-transform: uppercase;
+                     letter-spacing: .08em; color: var(--text-muted); font-weight: 600;
+                     margin-bottom: 5px; }
+  .scoperow select {
+    width: 100%; font: inherit; font-size: 12.5px; padding: 7px 9px; border-radius: 8px;
+    border: 1px solid var(--hairline); background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: var(--text-primary);
+  }
+  .scoperow select:focus { outline: none; border-color: var(--series-1);
+                            box-shadow: 0 0 0 3px rgba(57,135,229,0.22); }
+
+  .listhead {
+    padding: 6px 18px 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--text-muted); font-weight: 600; flex: 0 0 auto;
+  }
+  #list, #askhistlist { overflow-y: auto; flex: 1; padding: 0 8px 14px; }
+  .doc {
+    padding: 9px 10px; border-radius: 9px; cursor: pointer; display: flex;
+    gap: 8px; align-items: center; border: 1px solid transparent; transition: background .15s;
+  }
+  .doc:hover { background: var(--plane); }
+  .doc.sel { background: var(--plane); border-color: var(--hairline); }
+  .doc .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; font-size: 13px; }
+
+  /* --------------------------------------------------------------- status --
+     Icon + label together, always. Never color alone: good vs critical are
+     ~indistinguishable under deuteranopia (measured CVD ΔE 4.1). */
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
+            font-weight: 600; white-space: nowrap; }
+  .status .glyph { width: 14px; height: 14px; display: grid; place-items: center;
+                   border-radius: 50%; font-size: 9px; line-height: 1; flex: 0 0 auto; }
+  .status.ok       { color: var(--status-good); }
+  .status.ok .glyph{ background: var(--status-good); color: var(--surface-solid); }
+  .status.error    { color: var(--status-critical); }
+  .status.error .glyph { background: var(--status-critical); color: var(--surface-solid); }
+  .status.run      { color: var(--series-1); }
+  .status.run .glyph { border: 2px solid var(--series-1); border-right-color: transparent;
+                       animation: spin .9s linear infinite; }
+  .status.pend     { color: var(--text-muted); }
+  .status.pend .glyph { border: 2px solid var(--baseline); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .btnspin { display: inline-block; width: 12px; height: 12px; margin-right: 3px;
+             vertical-align: -2px; border: 2px solid currentColor;
+             border-right-color: transparent; border-radius: 50%;
+             animation: spin .8s linear infinite; }
+
+  /* ----------------------------------------------------------- doc heading */
+  .title { font-size: 22px; font-weight: 650; margin: 0 0 5px; word-break: break-word;
+           letter-spacing: -0.015em; }
+  .sub { color: var(--text-secondary); font-size: 12.5px; }
+  .sub .sep { color: var(--baseline); margin: 0 7px; }
+
+  /* -------------------------------------------------------------- stat tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+           gap: 10px; margin: 20px 0 4px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--hairline);
+          backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+          border-radius: 14px; padding: 13px 15px; box-shadow: 0 6px 24px rgba(0,0,0,0.3); }
+  .tile .lab { font-size: 11.5px; color: var(--text-secondary); }
+  /* proportional figures on purpose: tabular-nums makes big numbers look loose */
+  .tile .val { font-size: 25px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; }
+  .tile .val .unit { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-left: 2px; }
+  .tile .note { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--text-muted); margin: 30px 0 4px; font-weight: 650; }
+  h2 + .lede { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 12px; }
+
+  /* ------------------------------------------------------------ stage cards */
+  .stage {
+    display: grid; grid-template-columns: 30px 1fr; gap: 0 13px;
+    background: var(--surface-1); border: 1px solid var(--hairline);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-radius: 14px; padding: 14px 16px; margin-bottom: 8px;
+    box-shadow: 0 6px 22px rgba(0,0,0,0.28);
+  }
+  .stage.is-pend { opacity: .62; }
+  .stage .num {
+    grid-row: 1 / span 3; width: 26px; height: 26px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 12px; font-weight: 650;
+    background: var(--plane); color: var(--text-secondary);
+    border: 1px solid var(--hairline); margin-top: 1px;
+  }
+  .stage.is-ok  .num { background: var(--status-good); color: #fff; border-color: transparent; }
+  .stage.is-err .num { background: var(--status-critical); color: #fff; border-color: transparent; }
+  .stage.is-run .num { border-color: var(--series-1); color: var(--series-1); }
+  .stage .hd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .stage .nm { font-weight: 620; font-size: 14.5px; }
+  .stage .hd .sp { flex: 1; }
+  .stage .ms { font-variant-numeric: tabular-nums; color: var(--text-secondary);
+               font-size: 12.5px; }
+  .stage .desc { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
+  .stage .did { font-size: 12.5px; color: var(--text-primary); margin-top: 6px;
+                display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .stage .did .key { color: var(--text-muted); }
+
+  /* Bar: one measure -> one hue. 4px rounded data-end, square at the baseline,
+     6px thick (well under the 24px cap), on a lighter step of its own ramp. */
+  .barwrap { margin-top: 9px; height: 6px; background: var(--track);
+             border-radius: 3px; overflow: hidden; }
+  .bar { height: 100%; background: var(--series-1);
+         border-radius: 0 3px 3px 0; min-width: 3px; }
+
+  /* ------------------------------------------------------------------ chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip { font-size: 12px; padding: 5px 11px; border-radius: 8px;
+          background: var(--surface-1); border: 1px solid var(--hairline);
+          display: inline-flex; align-items: center; gap: 7px; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .chip.free .dot { background: var(--status-good); }
+  .chip.ai   .dot { background: var(--series-1); }
+  .chip .tag { font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+               color: var(--text-muted); }
+  .chip b { font-weight: 620; }
+
+  /* ------------------------------------------------------------------ table */
+  .tablewrap { background: var(--surface-1); border: 1px solid var(--hairline);
+               backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+               border-radius: 14px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,0.3); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--gridline);
+           vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { color: var(--text-muted); font-weight: 650; font-size: 10.5px;
+       text-transform: uppercase; letter-spacing: .06em; background: var(--plane); }
+  td.prev { color: var(--text-secondary); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .errbox { border: 1px solid var(--status-critical); border-radius: 12px;
+            padding: 12px 14px; white-space: pre-wrap; font-size: 12.5px;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            background: var(--surface-1); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+  .empty { color: var(--text-secondary); padding: 60px 0; text-align: center; }
+  .empty b { display: block; color: var(--text-primary); font-size: 16px; margin-bottom: 6px; }
+
+  /* ------------------------------------------------------------- ask view --
+     Same components as the ingest view (.doc, .chip, .stage, .tile) reused
+     as-is; only genuinely new shapes get new rules below. */
+  #app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  #askform { padding: 14px; display: flex; flex-direction: column; gap: 10px;
+             flex: 0 0 auto; border-bottom: 1px solid var(--hairline); }
+  #askform label { display: block; font-size: 11px; text-transform: uppercase;
+                   letter-spacing: .08em; color: var(--text-muted); font-weight: 600;
+                   margin-bottom: 5px; }
+  #askq, #asktopk { width: 100%; font: inherit; font-size: 13px; padding: 9px 11px;
+                    border-radius: 10px; border: 1px solid var(--hairline);
+                    background: rgba(255,255,255,0.04); backdrop-filter: blur(8px);
+                    -webkit-backdrop-filter: blur(8px); color: var(--text-primary);
+                    transition: border-color .15s, box-shadow .15s; }
+  #askq { resize: vertical; }
+  #askq:focus, #asktopk:focus { outline: none; border-color: var(--series-1);
+                                 box-shadow: 0 0 0 3px rgba(57,135,229,0.22); }
+
+  /* Cache / Live / General — icon-bearing text label IS the identity, never
+     the color alone (same rule as the rest of this file). */
+  .asktag { font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
+            padding: 2px 7px; border-radius: 6px; flex: 0 0 auto; white-space: nowrap; }
+  .asktag.cache   { background: var(--brand); color: var(--ink-on-brand); }
+  .asktag.live    { background: var(--series-1); color: #fff; }
+  .asktag.general { background: var(--baseline); color: var(--text-primary); }
+
+  .source-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                    padding: 12px 15px; border-radius: 14px; background: var(--surface-1);
+                    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+                    border: 1px solid var(--hairline); margin: 14px 0 18px;
+                    box-shadow: 0 6px 22px rgba(0,0,0,0.28); }
+  .source-banner .dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .source-banner .lbl { font-size: 13.5px; font-weight: 650; }
+  .source-banner .sub { font-size: 12px; color: var(--text-secondary); }
+  .source-banner.cache .dot   { background: var(--brand); }
+  .source-banner.live  .dot   { background: var(--series-1); }
+  .source-banner.general .dot { background: var(--baseline); }
+
+  .answercard { position: relative; background: var(--surface-1); border: 1px solid var(--hairline);
+                backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+                border-radius: 16px; padding: 18px 20px 18px 24px; font-size: 14.5px;
+                line-height: 1.7; white-space: pre-wrap; box-shadow: 0 8px 30px rgba(0,0,0,0.35); }
+  .answercard::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px;
+                         width: 3px; border-radius: 2px; background: var(--brand);
+                         box-shadow: 0 0 12px rgba(251,226,50,0.5); }
+
+  .citation { position: relative; background: var(--surface-1); border: 1px solid var(--hairline);
+              backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+              border-radius: 16px; padding: 14px 16px 14px 20px; margin-bottom: 12px;
+              box-shadow: 0 6px 22px rgba(0,0,0,0.28);
+              transition: border-color .15s, transform .15s, box-shadow .15s; }
+  .citation::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px;
+                       width: 3px; border-radius: 2px; background: var(--series-1); opacity: .65; }
+  .citation:hover { border-color: var(--baseline); transform: translateY(-2px);
+                    box-shadow: 0 10px 28px rgba(0,0,0,0.4); }
+  .citation .chd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+                    margin-bottom: 9px; }
+  .citation .num { font-weight: 650; font-size: 12.5px; color: var(--text-muted); }
+  .citation .fn { font-weight: 620; font-size: 13.5px; }
+  .citation .loc { font-size: 12px; color: var(--text-secondary); }
+  /* Full snippet, always -- no truncation, no line clamp. Scores are
+     deliberately not shown -- raw retrieval-score units aren't legible to a
+     general reader and previously read as visual clutter; rank order (#1,
+     #2, ...) already conveys "most to least relevant". */
+  .citation .snippet { font-size: 13px; color: var(--text-secondary);
+                        white-space: pre-wrap; line-height: 1.6; }
+  .citation .jump { display: inline-block; margin-top: 10px; font-size: 12px;
+                    color: var(--series-1); cursor: pointer; font-weight: 600; }
+  .citation .jump:hover { text-decoration: underline; }
+
+  /* ------------------------------------------------------------------- gate */
+  #gate { padding: 46px 30px; max-width: 470px; margin: 0 auto; }
+  #gate input { width: 100%; padding: 10px 12px; border-radius: 10px; margin: 12px 0;
+                border: 1px solid var(--hairline); background: rgba(255,255,255,0.04);
+                backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+                color: var(--text-primary); font: inherit; }
+  #gate input:focus { outline: none; border-color: var(--series-1);
+                       box-shadow: 0 0 0 3px rgba(57,135,229,0.22); }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+           background: rgba(10,10,10,0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+           color: var(--brand); border: 1px solid var(--hairline);
+           padding: 9px 17px; border-radius: 10px; font-size: 13px; opacity: 0;
+           transition: opacity .2s; pointer-events: none; max-width: 80vw; z-index: 50; }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+
+<nav id="navrail" hidden>
+  <span class="navmark"></span>
+  <button class="navitem active" id="navIngest" type="button" title="Ingest &amp; Trace">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v11"/><path d="M7 8l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+    </svg>
+    <span>Ingest</span>
+  </button>
+  <button class="navitem" id="navAsk" type="button" title="Ask">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 4h16v11H8l-4 4V4z"/><path d="M8 9h8M8 12.5h5"/>
+    </svg>
+    <span>Ask</span>
+  </button>
+</nav>
+
+<div id="shell">
+  <header>
+    <span class="mark"></span>
+    <div>
+      <h1 id="pageTitle">Document Trace</h1>
+      <p id="pageSub">Watch a document become searchable knowledge — every step, and why.</p>
+    </div>
+    <span class="sp"></span>
+    <button class="btn" id="refresh">Refresh</button>
+    <button class="btn" id="signout">Sign out</button>
+  </header>
+
+  <div id="gate" hidden>
+    <h2 style="margin-top:0">API token</h2>
+    <p class="sub">Paste the bearer token printed by <code>python -m scripts.seed</code>.
+       It is stored in this browser only, and sent to this service alone.</p>
+    <input id="tok" type="password" placeholder="sk-…" autocomplete="off">
+    <button class="btn primary" id="save">Continue</button>
+    <p id="gateerr" class="sub" style="color:var(--status-critical)"></p>
+  </div>
+
+  <div id="app" hidden>
+    <div class="layout" id="docsLayout">
+      <aside class="side">
+        <div id="drop">
+          <b>Drop a document</b>
+          <small>or click to choose — pdf, docx, md, txt, csv, xlsx, images</small>
+          <input id="file" type="file" hidden multiple>
+        </div>
+        <div class="scoperow">
+          <label for="scope">Scope</label>
+          <select id="scope">
+            <option value="tenant" selected>Tenant — only your organization</option>
+            <option value="global">Global — every tenant (platform admin only)</option>
+          </select>
+        </div>
+        <div class="listhead">Ingested documents</div>
+        <div id="list"></div>
+      </aside>
+      <main class="main"><div class="wrap" id="detail">
+        <div class="empty">
+          <b>Nothing selected</b>
+          Drop a document on the left, or pick one you've already ingested.
+        </div>
+      </div></main>
+    </div>
+
+    <div class="layout" id="askLayout" hidden>
+      <aside class="side">
+        <div id="askform">
+          <div>
+            <label for="askq">Ask a question</label>
+            <textarea id="askq" rows="3" placeholder="What does this document say about…"></textarea>
+          </div>
+          <div>
+            <label for="asktopk">Sources to consider</label>
+            <input id="asktopk" type="number" min="1" max="50" value="10">
+          </div>
+          <button class="btn primary" id="askbtn" type="button">Ask</button>
+        </div>
+        <div class="listhead">Recent questions</div>
+        <div id="askhistlist"></div>
+      </aside>
+      <main class="main"><div class="wrap" id="askdetail">
+        <div class="empty">
+          <b>Nothing asked yet</b>
+          Ask a question about your ingested documents on the left.
+        </div>
+      </div></main>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* The walkthrough. `what` is the durable explanation of the stage — shown
+   whether or not it has run yet, because the point of this panel is to teach
+   the pipeline, not just report on it. Order and keys mirror
+   app.pipeline.runner.STAGES / app.domain.models.JobStage. */
+const STAGES = [
+  { key: "parse", name: "Parse",
+    what: "Opens the file with a real parser for its type and reads everything that is already machine-readable — text layers, headings, tables, cells. No AI is involved yet, and nothing leaves the machine." },
+  { key: "route", name: "Route",
+    what: "Decides, piece by piece, what the parser already got versus what is genuinely unreadable and needs the vision model. This is the step that determines cost: readable content stays free." },
+  { key: "extract", name: "Extract",
+    what: "Turns every piece into final text. Tables become Markdown so their structure survives; scanned pages and embedded figures are transcribed by the vision model under a strict no-guessing prompt." },
+  { key: "chunk", name: "Chunk",
+    what: "Splits the text into pieces sized against the embedding model's real tokenizer — not an estimate — so no chunk is silently truncated later. Headings and table boundaries are respected so meaning isn't cut in half." },
+  { key: "metadata", name: "Extract metadata",
+    what: "A small language-model pass pulls out author, date, topics and entities. These are folded into the keyword index, so they affect ranking. Best-effort by design: it never fails the ingest." },
+  { key: "embed", name: "Embed",
+    what: "Each chunk becomes a vector — a list of numbers that captures its meaning, so a search can match on sense rather than exact words. Runs locally on MiniLM; no text is sent to an external service." },
+  { key: "binarize", name: "Prepare vectors",
+    what: "A reserved slot for compressing vectors to bits. Today it is a deliberate pass-through, kept so the compression step can drop in without reshaping the pipeline." },
+  { key: "upsert", name: "Index",
+    what: "Writes the vectors, their text, and the document's access rules into the knowledge base. Any previous vectors for this document are dropped first, so re-ingesting the same file is always safe." },
+];
+
+const TERMINAL = new Set(["done", "failed", "dead"]);
+const TOKEN_KEY = "rag_trace_token";
+
+/* Exact route_reason values recorded by app/pipeline/loaders/*, glossed.
+   `ai` marks the ones that cost a vision-model call. */
+const REASONS = {
+  text_layer:           { ai: false, text: "had a real text layer — read directly" },
+  prose:                { ai: false, text: "prose — parsed directly" },
+  paragraph:            { ai: false, text: "paragraph — parsed directly" },
+  structured_table:     { ai: false, text: "a real table — parsed structurally" },
+  scanned_page:         { ai: true,  text: "a scanned page — transcribed by the vision model" },
+  scanned_table:        { ai: true,  text: "a table on a scanned page — read by the vision model" },
+  embedded_image:       { ai: true,  text: "an embedded image — transcribed by the vision model" },
+  embedded_image_table: { ai: true,  text: "a table inside an image — read by the vision model" },
+  image_asset:          { ai: true,  text: "an image file — transcribed by the vision model" },
+  image_table:          { ai: true,  text: "a table inside an image — read by the vision model" },
+  figure_detected:      { ai: true,  text: "a figure — transcribed by the vision model" },
+  figure_table:         { ai: true,  text: "a table inside a figure — read by the vision model" },
+};
+const looksAI = (k) => /vision|llm|ocr|scan|image|figure/i.test(k);
+const reasonInfo = (k) => REASONS[k] || { ai: looksAI(k), text: k };
+
+/* The query-side walkthrough, same spirit as STAGES above: a durable, plain-
+   language explanation of each control-flow step app.rag.query can take,
+   across BOTH calls the Ask view makes -- /query's retrieve_chunks builds
+   decompose/retrieve/rerank, and /answer's generate_answer_from_chunks
+   appends cache/generate on top of that same trace, so by the time we
+   render here it's one merged list either way. Only steps actually present
+   in a given answer's `trace` render — unlike ingestion this is a post-hoc
+   trace of one finished call, not a live-polled job, so there is no
+   "pending" state to show. */
+const QUERY_STAGES = {
+  cache: { name: "Cache check",
+    what: "Checks whether you already got this exact answer recently. A hit skips generation and returns the stored answer instantly (retrieval via /query already ran by this point in the Ask view's two-call flow)." },
+  decompose: { name: "Decompose",
+    what: "Checks whether this is really more than one question bundled together (e.g. “X vs Y”). If so, splits it into focused sub-questions so each gets an accurate search instead of one blurry combined one." },
+  retrieve: { name: "Retrieve",
+    what: "Searches the knowledge base two ways at once — by meaning (vector similarity) and by exact keywords (BM25) — then merges the results. Only documents you're allowed to see are considered." },
+  rerank: { name: "Rerank",
+    what: "Re-scores the candidate passages with a more precise model, so the ones that best answer this specific question rise to the top." },
+  generate: { name: "Generate",
+    what: "Sends the top passages to the language model with a strict instruction to answer ONLY from them — or, if nothing relevant was found, falls back to a plain general-knowledge answer with no citations, rather than a dead end." },
+};
+
+/* Page identity for the two hash routes. Distinct title/subtitle per page is
+   what makes this feel like two places, not one view with a mode switch. */
+const PAGES = {
+  ingest: { title: "Document Trace",
+            sub: "Watch a document become searchable knowledge — every step, and why.",
+            doctitle: "Document Trace" },
+  ask:    { title: "Ask",
+            sub: "Ask a question and see exactly how the answer was produced — cache, retrieval, or general knowledge.",
+            doctitle: "Ask — Document Trace" },
+};
+
+let token = localStorage.getItem(TOKEN_KEY) || "";
+let selected = null;
+let poll = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("on"), 3400);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { Authorization: "Bearer " + token, ...(opts.headers || {}) },
+  });
+  if (res.status === 401 || res.status === 403) { signOut("Token rejected."); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error((await res.text()) || res.statusText);
+  return res.json();
+}
+
+// ------------------------------------------------------------------ routing --
+
+function navigate(page, opts = {}) {
+  if (!PAGES[page]) page = "ingest";
+  if (!opts.silent && location.hash !== "#/" + page) location.hash = "#/" + page;
+  const isIngest = page === "ingest";
+  $("docsLayout").hidden = !isIngest;
+  $("askLayout").hidden = isIngest;
+  $("navIngest").classList.toggle("active", isIngest);
+  $("navAsk").classList.toggle("active", !isIngest);
+  $("pageTitle").textContent = PAGES[page].title;
+  $("pageSub").textContent = PAGES[page].sub;
+  document.title = PAGES[page].doctitle;
+
+  const activeLayout = isIngest ? $("docsLayout") : $("askLayout");
+  activeLayout.classList.remove("entering");
+  void activeLayout.offsetWidth;   // restart the animation on every navigation
+  activeLayout.classList.add("entering");
+
+  if (!isIngest) {
+    renderAskHistList();
+    renderAskDetail(askHistory[askSelected] || null);
+  }
+}
+function currentHashPage() {
+  return location.hash.replace(/^#\/?/, "") || "ingest";
+}
+window.addEventListener("hashchange", () => navigate(currentHashPage(), { silent: true }));
+$("navIngest").onclick = () => navigate("ingest");
+$("navAsk").onclick = () => navigate("ask");
+
+// ---------------------------------------------------------------- auth gate --
+
+function showGate(msg) {
+  $("navrail").hidden = true;
+  $("app").hidden = true; $("gate").hidden = false;
+  $("gateerr").textContent = msg || "";
+  $("tok").focus();
+}
+function signOut(msg) {
+  localStorage.removeItem(TOKEN_KEY); token = "";
+  if (poll) { clearTimeout(poll); poll = null; }
+  showGate(msg);
+}
+function enterApp() {
+  $("gate").hidden = true; $("app").hidden = false; $("navrail").hidden = false;
+  navigate(currentHashPage(), { silent: true });
+  loadList();
+}
+$("save").onclick = async () => {
+  const v = $("tok").value.trim();
+  if (!v) return;
+  token = v;
+  try {
+    await api("/documents?limit=1");
+    localStorage.setItem(TOKEN_KEY, v);
+    enterApp();
+  } catch { token = ""; $("gateerr").textContent = "That token was not accepted."; }
+};
+$("tok").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+$("signout").onclick = () => signOut("");
+$("refresh").onclick = () => (currentHashPage() === "ask" ? renderAskHistList() : loadList());
+
+// ------------------------------------------------------------ document list --
+
+const STATUS_UI = {
+  done:    { cls: "ok",    glyph: "&check;", label: "Indexed" },
+  failed:  { cls: "error", glyph: "&times;", label: "Failed" },
+  dead:    { cls: "error", glyph: "&times;", label: "Gave up" },
+  running: { cls: "run",   glyph: "",        label: "Running" },
+  queued:  { cls: "pend",  glyph: "",        label: "Queued" },
+};
+function statusHTML(status) {
+  const s = STATUS_UI[status] || { cls: "pend", glyph: "", label: status || "unknown" };
+  return `<span class="status ${s.cls}"><span class="glyph">${s.glyph}</span>${esc(s.label)}</span>`;
+}
+
+async function loadList() {
+  let data;
+  try { data = await api("/documents?limit=100"); }
+  catch (e) { toast("Could not load documents: " + e.message); return; }
+
+  const list = $("list");
+  if (!data.documents.length) {
+    list.innerHTML = '<div class="empty" style="padding:26px 10px;font-size:12.5px">Nothing ingested yet.</div>';
+    return;
+  }
+  list.innerHTML = data.documents.map((d) => `
+    <div class="doc${selected && selected.document_id === d.document_id ? " sel" : ""}"
+         data-doc="${esc(d.document_id)}" data-job="${esc(d.job_id || "")}">
+      <span class="nm" title="${esc(d.filename)}">${esc(d.filename || d.document_id)}</span>
+      ${statusHTML(d.status)}
+    </div>`).join("");
+
+  list.querySelectorAll(".doc").forEach((el) => {
+    el.onclick = () => select(el.dataset.doc, el.dataset.job);
+  });
+}
+
+function select(documentId, jobId) {
+  if (!jobId) { toast("No ingestion job recorded for that document."); return; }
+  selected = { document_id: documentId, job_id: jobId };
+  // Scoped to #list, not the whole document -- the Ask tab's history list
+  // reuses the same .doc row class and must not have its own selection
+  // state clobbered by this.
+  $("list").querySelectorAll(".doc").forEach((e) =>
+    e.classList.toggle("sel", e.dataset.doc === documentId));
+  if (poll) { clearTimeout(poll); poll = null; }
+  refreshDetail();
+}
+
+// -------------------------------------------------------------- detail view --
+
+async function refreshDetail() {
+  if (!selected) return;
+  const jobId = selected.job_id;
+  let t;
+  try { t = await api(`/jobs/${jobId}/trace`); }
+  catch (e) { $("detail").innerHTML = `<div class="errbox">${esc(e.message)}</div>`; return; }
+  if (!selected || selected.job_id !== jobId) return;   // clicked away mid-flight
+
+  const running = !TERMINAL.has(t.job.status);
+  render(t, running);
+
+  if (running) {
+    poll = setTimeout(refreshDetail, 1200);
+  } else {
+    poll = null;
+    loadChunks(t.document.document_id);
+    loadList();                       // the sidebar pill is now stale
+  }
+}
+
+function fmtMs(ms) {
+  if (ms == null) return "";
+  if (ms >= 1000) return (ms / 1000).toFixed(ms >= 10000 ? 0 : 1) + " s";
+  return Math.round(ms) + " ms";
+}
+function splitVal(ms) {
+  if (ms >= 1000) return [(ms / 1000).toFixed(1), "s"];
+  return [String(Math.round(ms)), "ms"];
+}
+
+function render(t, running) {
+  const evByStage = {};
+  for (const s of t.stages) evByStage[s.stage] = s;      // last attempt wins
+  const maxMs = Math.max(1, ...t.stages.map((s) => s.duration_ms || 0));
+  const totalMs = t.stages.reduce((a, s) => a + (s.duration_ms || 0), 0);
+
+  const rs = t.job.route_summary || {};
+  const byReason = rs.by_reason || {};
+  const aiPieces = Object.entries(byReason)
+    .reduce((n, [k, v]) => n + (reasonInfo(k).ai ? v : 0), 0);
+  const totalPieces = Object.values(byReason).reduce((a, b) => a + b, 0);
+
+  const [tv, tu] = splitVal(totalMs);
+
+  $("detail").innerHTML = `
+    <div class="titlerow">
+      <div class="grow">
+        <div class="title">${esc(t.document.filename || t.document.document_id)}</div>
+        <div class="sub">
+          ${esc(t.document.source_type)}<span class="sep">|</span>
+          ${esc(t.document.visibility)}<span class="sep">|</span>
+          ${esc(t.document.scope)} scope<span class="sep">|</span>
+          ${esc(t.document.created_at || "")}
+          <span class="sep">|</span>${statusHTML(t.job.status)}
+        </div>
+      </div>
+      <button class="btn danger" id="del">Delete document</button>
+    </div>
+    <div id="delzone"></div>
+
+    ${t.job.error ? `
+      <h2>What went wrong</h2>
+      <div class="errbox">${esc(t.job.error)}${
+        t.job.attempts ? `\n\nattempt ${t.job.attempts}` : ""}</div>` : ""}
+
+    <div class="tiles">
+      <div class="tile"><div class="lab">Time in pipeline</div>
+        <div class="val">${tv}<span class="unit">${tu}</span></div>
+        <div class="note">${t.stages.length} of ${STAGES.length} stages run</div></div>
+      <div class="tile"><div class="lab">Searchable chunks</div>
+        <div class="val">${t.chunk_count}</div>
+        <div class="note">${t.token_total.toLocaleString()} tokens indexed</div></div>
+      <div class="tile"><div class="lab">Read for free</div>
+        <div class="val">${totalPieces - aiPieces}<span class="unit">/ ${totalPieces}</span></div>
+        <div class="note">parsed without any AI call</div></div>
+      <div class="tile"><div class="lab">Needed the vision model</div>
+        <div class="val">${aiPieces}</div>
+        <div class="note">${aiPieces ? "unreadable content only" : "nothing — all machine-readable"}</div></div>
+    </div>
+
+    ${routeSection(byReason, rs)}
+
+    <h2>The pipeline, step by step</h2>
+    <p class="lede">Eight stages turn a raw file into something a question can find.
+       Bars compare how long each stage took relative to the slowest.</p>
+    ${STAGES.map((st, i) => stageCard(st, i, evByStage[st.key], t, running, maxMs)).join("")}
+
+    <h2>What the document is about</h2>
+    <p class="lede">Pulled out by a language model at the metadata stage, and folded
+       into the keyword index so it influences what gets retrieved.</p>
+    ${metaSection(t.document.extracted_metadata || {})}
+
+    <h2>The chunks that got indexed</h2>
+    <p class="lede">The actual units a search retrieves — each one traceable back to
+       the extractor that produced it and the page it came from.</p>
+    <div id="chunks"><p class="sub">${running
+      ? "Available once the pipeline finishes…" : "Loading…"}</p></div>
+  `;
+
+  $("del").onclick = () => askDelete(t);
+}
+
+/* Deleting is irreversible and hits several stores at once, so the confirmation
+   spells out exactly what disappears rather than asking a bare "are you sure?".
+   Two steps, and the destructive styling only appears on the second. */
+function askDelete(t) {
+  const zone = $("delzone");
+  if (!zone) return;
+  const name = t.document.filename || t.document.document_id;
+  zone.innerHTML = `
+    <div class="confirm">
+      <p><b>Permanently delete ${esc(name)}?</b><br>
+         This removes its ${t.chunk_count} chunks and their vectors from the
+         knowledge base, deletes the stored file and its ingestion trace, and
+         clears any cached answers for this tenant. It cannot be undone, and the
+         document will stop being retrievable in chat.</p>
+      <div class="row">
+        <button class="btn danger-solid" id="delyes">Delete permanently</button>
+        <button class="btn" id="delno">Cancel</button>
+      </div>
+    </div>`;
+  $("delno").onclick = () => { zone.innerHTML = ""; };
+  $("delyes").onclick = async () => {
+    $("delyes").disabled = true;
+    $("delyes").textContent = "Deleting…";
+    try {
+      const r = await api(`/documents/${t.document.document_id}`, { method: "DELETE" });
+      toast(`${name} deleted — ${r.vectors_removed} vectors removed.`);
+      selected = null;
+      if (poll) { clearTimeout(poll); poll = null; }
+      $("detail").innerHTML = `<div class="empty">
+        <b>Deleted</b>${esc(name)} is no longer in the knowledge base.</div>`;
+      loadList();
+    } catch (e) {
+      // The API restricts delete to admins; say so plainly instead of failing mute.
+      const msg = /role cannot delete/i.test(e.message)
+        ? "Your token's role is not allowed to delete documents — admin only."
+        : e.message;
+      zone.innerHTML = `<div class="errbox">${esc(msg)}</div>`;
+    }
+  };
+}
+
+function stageCard(st, i, ev, t, running, maxMs) {
+  let cls = "pend", chip = statusHTML("queued"), ms = "", bar = 0;
+  if (ev && ev.status === "ok") {
+    cls = "ok"; chip = statusHTML("done"); ms = fmtMs(ev.duration_ms);
+    bar = ((ev.duration_ms || 0) / maxMs) * 100;
+  } else if (ev && ev.status === "error") {
+    cls = "err"; chip = statusHTML("failed"); ms = fmtMs(ev.duration_ms);
+  } else if (running && t.job.stage === st.key) {
+    cls = "run"; chip = statusHTML("running");
+  } else {
+    chip = `<span class="status pend"><span class="glyph"></span>Waiting</span>`;
+  }
+
+  const did = ev && ev.status === "ok" ? stageResult(st.key, ev.detail) : "";
+  return `<div class="stage is-${cls}">
+    <span class="num">${cls === "ok" ? "&check;" : cls === "err" ? "!" : i + 1}</span>
+    <div class="hd">
+      <span class="nm">${esc(st.name)}</span>
+      ${chip}<span class="sp"></span><span class="ms">${esc(ms)}</span>
+    </div>
+    <div>
+      <div class="desc">${esc(st.what)}</div>
+      ${did ? `<div class="did">${did}</div>` : ""}
+      ${bar ? `<div class="barwrap"><div class="bar" style="width:${bar.toFixed(1)}%"></div></div>` : ""}
+    </div>
+  </div>`;
+}
+
+// What this stage actually did for THIS document (from runner._stage_detail).
+function stageResult(key, d) {
+  if (!d) return "";
+  const kv = (k, v) => `<span><span class="key">${esc(k)}</span> <b>${esc(v)}</b></span>`;
+  if (key === "parse") {
+    const bits = [];
+    if (d.elements != null) bits.push(kv("found", `${d.elements} pieces of content`));
+    if (d.by_modality) {
+      const m = Object.entries(d.by_modality).map(([k, v]) => `${v} ${k}`).join(", ");
+      if (m) bits.push(kv("of which", m));
+    }
+    return bits.join("");
+  }
+  if (key === "chunk") {
+    if (d.chunks == null) return "";
+    const bits = [kv("produced", `${d.chunks} chunks`)];
+    if (d.by_modality) {
+      const m = Object.entries(d.by_modality).map(([k, v]) => `${v} ${k}`).join(", ");
+      if (m) bits.push(kv("of which", m));
+    }
+    return bits.join("");
+  }
+  if (key === "metadata") {
+    const bits = [];
+    if (d.author) bits.push(kv("found", "an author"));
+    if (d.date) bits.push(kv("found", "a date"));
+    if (d.topics) bits.push(kv("topics", d.topics));
+    if (d.entities) bits.push(kv("entities", d.entities));
+    return bits.length ? bits.join("") : `<span class="key">nothing could be extracted</span>`;
+  }
+  if (key === "embed" && d.vectors != null) return kv("created", `${d.vectors} vectors`);
+  if (key === "upsert" && d.points != null) return kv("wrote", `${d.points} points to the index`);
+  if (key === "route" || key === "extract") return "";
+  return "";
+}
+
+/* The cost story. Identity comes from a colored dot beside the text plus a
+   FREE / AI tag — never from coloring the text itself. */
+function routeSection(byReason, rs) {
+  const entries = Object.entries(byReason);
+  if (!entries.length) return "";
+  const chips = entries.map(([k, v]) => {
+    const info = reasonInfo(k);
+    return `<span class="chip ${info.ai ? "ai" : "free"}">
+      <span class="dot"></span><span class="tag">${info.ai ? "AI" : "FREE"}</span>
+      <b>${v}</b> ${esc(info.text)}</span>`;
+  }).join("");
+  const ex = Object.entries(rs.by_extractor || {})
+    .map(([k, v]) => `<span class="chip"><b>${esc(k)}</b> &times;${v}</span>`).join("");
+  return `<h2>Why it cost what it cost</h2>
+    <p class="lede">Structure first, AI only when structure runs out — so the bill
+       tracks unreadable content, not page count.</p>
+    <div class="chips">${chips}</div>
+    ${ex ? `<div class="chips" style="margin-top:9px">${ex}</div>` : ""}`;
+}
+
+function metaSection(m) {
+  const rows = [];
+  if (m.author) rows.push(`<span class="chip"><span class="tag">AUTHOR</span><b>${esc(m.author)}</b></span>`);
+  if (m.date) rows.push(`<span class="chip"><span class="tag">DATE</span><b>${esc(m.date)}</b></span>`);
+  (m.topics || []).forEach((t) => rows.push(`<span class="chip">${esc(t)}</span>`));
+  (m.entities || []).forEach((e) => rows.push(`<span class="chip">${esc(e)}</span>`));
+  return rows.length ? `<div class="chips">${rows.join("")}</div>`
+                     : `<p class="sub">Nothing was extracted for this document.</p>`;
+}
+
+async function loadChunks(documentId) {
+  const host = $("chunks");
+  if (!host) return;
+  let data;
+  try { data = await api(`/documents/${documentId}/chunks?preview=200`); }
+  catch (e) { host.innerHTML = `<p class="sub">Could not load chunks: ${esc(e.message)}</p>`; return; }
+  if (!data.chunks.length) { host.innerHTML = `<p class="sub">No chunks were produced.</p>`; return; }
+
+  host.innerHTML = `<div class="tablewrap"><table>
+    <thead><tr>
+      <th>#</th><th>Kind</th><th>Read by</th><th>Why</th>
+      <th>Where</th><th class="num">Tokens</th><th>Preview</th>
+    </tr></thead><tbody>
+    ${data.chunks.map((c) => `<tr>
+      <td class="num">${c.ordinal + 1}</td>
+      <td>${esc(c.modality)}</td>
+      <td>${esc(c.extractor || "")}</td>
+      <td>${esc(reasonInfo(c.route_reason || "").text)}</td>
+      <td>${esc(fmtPages(c.pages))}</td>
+      <td class="num">${c.tokens || 0}</td>
+      <td class="prev">${esc(c.preview || "")}</td>
+    </tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function fmtPages(p) {
+  if (p == null) return "";
+  if (Array.isArray(p)) return p.length === 1 ? `p.${p[0]}` : `pp.${p[0]}–${p[p.length - 1]}`;
+  return `p.${p}`;
+}
+
+// ------------------------------------------------------------------ upload --
+
+async function upload(files) {
+  const scope = $("scope").value;
+  for (const f of files) {
+    toast(`Uploading ${f.name}…`);
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    fd.append("scope", scope);
+    let res;
+    try { res = await api("/ingest", { method: "POST", body: fd }); }
+    catch (e) {
+      const msg = /platform tenant.*admin/i.test(e.message)
+        ? "only the platform tenant's admin may publish to global scope"
+        : e.message;
+      toast(`${f.name}: ${msg}`);
+      continue;
+    }
+
+    await loadList();
+    if (res.deduplicated) {
+      toast(`${f.name}: identical content already indexed — showing the existing trace.`);
+      const row = document.querySelector(`.doc[data-doc="${res.document_id}"]`);
+      if (row) select(row.dataset.doc, row.dataset.job);
+    } else {
+      toast(`${f.name}: queued — watch it flow.`);
+      select(res.document_id, res.job_id);
+    }
+  }
+}
+
+const drop = $("drop");
+drop.onclick = () => $("file").click();
+$("file").onchange = (e) => { upload([...e.target.files]); e.target.value = ""; };
+["dragenter", "dragover"].forEach((ev) =>
+  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) =>
+  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => {
+  if (e.dataTransfer && e.dataTransfer.files.length) upload([...e.dataTransfer.files]);
+});
+
+// ---------------------------------------------------------------------- ask --
+
+const ASK_HIST_KEY = "rag_ask_history";
+let askHistory = [];
+try { askHistory = JSON.parse(localStorage.getItem(ASK_HIST_KEY) || "[]"); } catch { askHistory = []; }
+let askSelected = 0;
+
+function saveAskHistory() {
+  try { localStorage.setItem(ASK_HIST_KEY, JSON.stringify(askHistory.slice(0, 30))); } catch { /* storage full/blocked -- history just won't persist */ }
+}
+
+// Cache vs. live vs. general-knowledge -- the one fact a general user needs
+// at a glance. Derived entirely from what /query already returns (see
+// app.rag.query._result_from_cache): a cache hit always leads its trace with
+// {"stage": "cache", ...}; a live run never does.
+function askTag(entry) {
+  if (entry.grounded === false) return { cls: "general", text: "General" };
+  if (entry.trace && entry.trace[0] && entry.trace[0].stage === "cache") return { cls: "cache", text: "Cache" };
+  return { cls: "live", text: "Live" };
+}
+
+function renderAskHistList() {
+  const host = $("askhistlist");
+  if (!askHistory.length) {
+    host.innerHTML = '<div class="empty" style="padding:26px 10px;font-size:12.5px">No questions asked yet.</div>';
+    return;
+  }
+  host.innerHTML = askHistory.map((e, i) => {
+    const tag = askTag(e);
+    return `<div class="doc${i === askSelected ? " sel" : ""}" data-idx="${i}">
+      <span class="nm" title="${esc(e.question)}">${esc(e.question)}</span>
+      <span class="asktag ${tag.cls}">${esc(tag.text)}</span>
+    </div>`;
+  }).join("");
+  host.querySelectorAll(".doc").forEach((el) => {
+    el.onclick = () => {
+      askSelected = Number(el.dataset.idx);
+      renderAskHistList();
+      renderAskDetail(askHistory[askSelected]);
+    };
+  });
+}
+
+// Rank order (#1, #2, ...) already conveys most-to-least relevant -- raw
+// retrieval scores are deliberately not shown; their units differ across
+// paths (cosine similarity / RRF fusion / cross-encoder logit) and read as
+// clutter rather than a signal to a general reader.
+function citationCard(c, i) {
+  return `<div class="citation">
+    <div class="chd">
+      <span class="num">#${i + 1}</span>
+      <span class="fn">${esc(c.filename || c.document_id || "")}</span>
+      ${c.location ? `<span class="loc">${esc(c.location)}</span>` : ""}
+    </div>
+    <div class="snippet">${esc(c.snippet || "")}</div>
+    <span class="jump" data-doc="${esc(c.document_id || "")}">View ingestion trace &rarr;</span>
+  </div>`;
+}
+
+function renderAskDetail(entry) {
+  const host = $("askdetail");
+  if (!entry) {
+    host.innerHTML = `<div class="empty"><b>Nothing asked yet</b>Ask a question about your ingested documents on the left.</div>`;
+    return;
+  }
+  const tag = askTag(entry);
+  const bannerHTML = tag.cls === "general"
+    ? `<div class="source-banner general"><span class="dot"></span><span class="lbl">💬 General knowledge — no matching documents</span></div>`
+    : tag.cls === "cache"
+      ? `<div class="source-banner cache"><span class="dot"></span><span class="lbl">⚡ Served from cache</span><span class="sub">${esc((entry.trace[0] || {}).detail || "")}</span></div>`
+      : `<div class="source-banner live"><span class="dot"></span><span class="lbl">🔍 Generated just now from your documents</span></div>`;
+
+  const subq = (entry.sub_questions || []).length ? `
+    <h2>Treated as ${entry.sub_questions.length} separate questions</h2>
+    <div class="chips">${entry.sub_questions.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>` : "";
+
+  const stagesHTML = (entry.trace || []).map((t) => {
+    const info = QUERY_STAGES[t.stage] || { name: t.stage, what: "" };
+    return `<div class="stage is-ok">
+      <span class="num">&check;</span>
+      <div class="hd"><span class="nm">${esc(info.name)}</span></div>
+      <div>
+        <div class="desc">${esc(info.what)}</div>
+        ${t.detail ? `<div class="did">${esc(t.detail)}</div>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+
+  const citations = entry.citations || [];
+  const hasCitations = tag.cls !== "general" && citations.length > 0;
+  const citesHTML = tag.cls === "general" ? "" : `
+    <h2>Sources</h2>
+    <p class="lede">The exact passages the answer was grounded in — full text, nothing clipped.</p>
+    ${hasCitations
+      ? citations.map((c, i) => citationCard(c, i)).join("")
+      : `<p class="sub">No passages were retrieved.</p>`}`;
+
+  host.innerHTML = `
+    <div class="title">${esc(entry.question)}</div>
+    ${bannerHTML}
+    <div class="answercard">${esc(entry.answer)}</div>
+    ${subq}
+    <h2>How this answer was produced</h2>
+    <p class="lede">The actual steps taken for this question, in order.</p>
+    ${stagesHTML}
+    ${citesHTML}
+  `;
+
+  host.querySelectorAll(".citation .jump").forEach((el) => {
+    el.onclick = async () => {
+      const docId = el.dataset.doc;
+      if (!docId) return;
+      try {
+        const data = await api("/documents?limit=200");
+        const row = data.documents.find((d) => d.document_id === docId);
+        if (!row || !row.job_id) { toast("No ingestion trace available for that document."); return; }
+        navigate("ingest");
+        select(row.document_id, row.job_id);
+      } catch (e) { toast("Could not open trace: " + e.message); }
+    };
+  });
+}
+
+async function askQuestion() {
+  const qEl = $("askq");
+  const question = qEl.value.trim();
+  if (!question) return;
+  const topK = Math.max(1, Math.min(50, Number($("asktopk").value) || 10));
+  const btn = $("askbtn");
+  btn.disabled = true; btn.innerHTML = '<span class="btnspin"></span>Asking…';
+  try {
+    // Two calls, not one: /query is retrieval-only (so any external caller
+    // can use it with their own LLM); /answer generates from exactly the
+    // chunks /query just returned, same as any other caller would chain them.
+    const retrieved = await api("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, top_k: topK }),
+    });
+    const result = await api("/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: retrieved.question,
+        contexts: retrieved.contexts,
+        chunk_ids: retrieved.chunk_ids,
+        scores: retrieved.scores,
+        citations: retrieved.citations,
+        sub_questions: retrieved.sub_questions,
+      }),
+    });
+    askHistory.unshift(result);
+    askHistory = askHistory.slice(0, 30);
+    askSelected = 0;
+    saveAskHistory();
+    renderAskHistList();
+    renderAskDetail(result);
+    qEl.value = "";
+  } catch (e) {
+    toast("Could not get an answer: " + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "Ask";
+  }
+}
+$("askbtn").onclick = askQuestion;
+$("askq").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); askQuestion(); }
+});
+
+// -------------------------------------------------------------------- boot --
+
+if (token) { enterApp(); } else { showGate(""); }
+</script>
+</body>
+</html>

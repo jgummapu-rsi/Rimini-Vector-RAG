@@ -28,12 +28,12 @@ from collections import defaultdict
 import numpy as np
 
 import ir_datasets
-from app.container import build_container
-from app.domain.models import Modality
-from app.pipeline.chunker import chunk_elements
-from app.pipeline.elements import Element
-from app.ports.vector_store import VectorPoint
-from app.rag.query import _fetch_k, _rerank
+from app.shared.container import build_container
+from app.shared.domain.models import Modality
+from app.ingest.pipeline.chunker import chunk_elements
+from app.ingest.pipeline.elements import Element
+from app.shared.ports.vector_store import VectorPoint
+from app.retrieval.rag.query import _fetch_k, _rerank
 
 K_VALUES = [1, 3, 5, 10, 20, 100]
 _TENANT = "evaltenant"
@@ -212,7 +212,7 @@ def main() -> None:
         return _dedup_hit_docs(hits, max(K_VALUES))
 
     # --- HYBRID+RERANK (shipped cross-encoder second pass), mirroring
-    # app.rag.query: fetch a wider fused pool, then reorder with the reranker.
+    # app.retrieval.rag.query: fetch a wider fused pool, then reorder with the reranker.
     # The cross-encoder runs one forward pass per candidate, so its pool is
     # bounded (rerank_pool) for tractable runtime -- recall beyond that pool's
     # doc coverage is capped by design; judge RERANK on nDCG@10/MRR (precision),

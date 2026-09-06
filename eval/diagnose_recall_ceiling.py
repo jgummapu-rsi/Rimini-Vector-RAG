@@ -31,10 +31,10 @@ from collections import defaultdict
 import numpy as np
 
 import ir_datasets
-from app.adapters.embedders.onnx_embedder import OnnxEmbedder
-from app.adapters.pgvector.db import transaction
-from app.config import settings
-from app.container import build_container
+from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
+from app.shared.adapters.pgvector.db import transaction
+from app.shared.config import settings
+from app.shared.container import build_container
 
 EVAL_TENANT_NAME = "scifact-eval-postgres-benchmark"
 EMBED_REPO = "Xenova/bge-base-en-v1.5"

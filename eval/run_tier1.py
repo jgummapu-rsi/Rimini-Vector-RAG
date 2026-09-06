@@ -34,12 +34,12 @@ import numpy as np
 import pandas as pd
 
 import ir_datasets
-from app.adapters.embedders.onnx_embedder import OnnxEmbedder
-from app.adapters.pgvector.db import transaction
-from app.adapters.rerankers.cross_encoder import CrossEncoderReranker
-from app.config import settings
-from app.container import build_container
-from app.rag.query import _rerank
+from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
+from app.shared.adapters.pgvector.db import transaction
+from app.retrieval.adapters.rerankers.cross_encoder import CrossEncoderReranker
+from app.shared.config import settings
+from app.shared.container import build_container
+from app.retrieval.rag.query import _rerank
 
 K_VALUES = [1, 3, 5, 10]
 EVAL_TENANT_NAME = "scifact-eval-postgres-benchmark"

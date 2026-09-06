@@ -3,7 +3,7 @@
 No judge model anywhere in this script. Both sides are scored with pure IR math
 (precision/recall/nDCG/MRR, reused from `eval/run_retrieval.py`) against BEIR SciFact's
 own gold qrels -- no ground truth is derived or guessed. Both sides are queried through
-their retrieval-only endpoint (ours: `app.rag.query._retrieve`/`_rerank`, no
+their retrieval-only endpoint (ours: `app.retrieval.rag.query._retrieve`/`_rerank`, no
 decompose/generation; khub: `POST /api/v1/search`, not `/api/v1/ask`) so nothing here
 ever calls an LLM, on either side, at any stage.
 
@@ -40,12 +40,12 @@ import numpy as np
 from dotenv import dotenv_values
 
 import ir_datasets
-from app.container import build_container
-from app.domain.models import Modality
-from app.pipeline.chunker import chunk_elements
-from app.pipeline.elements import Element
-from app.ports.vector_store import VectorPoint
-from app.rag.query import _rerank, _retrieve
+from app.shared.container import build_container
+from app.shared.domain.models import Modality
+from app.ingest.pipeline.chunker import chunk_elements
+from app.ingest.pipeline.elements import Element
+from app.shared.ports.vector_store import VectorPoint
+from app.retrieval.rag.query import _rerank, _retrieve
 
 from eval.run_retrieval import K_VALUES, _ndcg_at_k, _precision_at_k, _recall_at_k, _rr_at_10
 

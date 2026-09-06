@@ -3,7 +3,7 @@ now-embedder-driven chunker), re-embed, rebuild the pgvector table, then
 benchmark with the local cross-encoder at a chosen pool depth.
 
 Why: the chunker now sizes chunks against the ACTIVE embedder's tokenizer and
-hard limit (app.ports.embedder.Embedder.max_tokens/count_tokens +
+hard limit (app.shared.ports.embedder.Embedder.max_tokens/count_tokens +
 ChunkSpec.auto). With bge-base (512-token limit) that yields ~390/476-token
 chunks instead of MiniLM's 180/220 -- fewer, richer chunks (was 2.84 chunks/doc
 at 256), so a document's relevant content is less fragmented and its best chunk
@@ -29,16 +29,16 @@ import numpy as np
 import pandas as pd
 
 import ir_datasets
-from app.adapters.embedders.onnx_embedder import OnnxEmbedder
-from app.adapters.pgvector.db import transaction
-from app.adapters.rerankers.cross_encoder import CrossEncoderReranker
-from app.config import settings
-from app.container import build_container
-from app.domain.models import Modality
-from app.pipeline.chunker import ChunkSpec, chunk_elements
-from app.pipeline.elements import Element
-from app.ports.vector_store import VectorPoint
-from app.rag.query import _rerank
+from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
+from app.shared.adapters.pgvector.db import transaction
+from app.retrieval.adapters.rerankers.cross_encoder import CrossEncoderReranker
+from app.shared.config import settings
+from app.shared.container import build_container
+from app.shared.domain.models import Modality
+from app.ingest.pipeline.chunker import ChunkSpec, chunk_elements
+from app.ingest.pipeline.elements import Element
+from app.shared.ports.vector_store import VectorPoint
+from app.retrieval.rag.query import _rerank
 
 K_VALUES = [1, 3, 5, 10]
 EVAL_TENANT_NAME = "scifact-eval-postgres-benchmark"

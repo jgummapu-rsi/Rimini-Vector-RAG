@@ -1,6 +1,6 @@
 """Same benchmark as `eval/run_retrieval_postgres.py`, but querying through the
 REAL production retrieval path including the cross-encoder reranker
-(`app.rag.query._retrieve` + `_rerank`) instead of a bare `vectors.search()`
+(`app.retrieval.rag.query._retrieve` + `_rerank`) instead of a bare `vectors.search()`
 call at a fixed top_k=10.
 
 `run_retrieval_postgres.py` fetches only the top-10 chunks and never reranks --
@@ -25,10 +25,10 @@ import numpy as np
 import pandas as pd
 
 import ir_datasets
-from app.adapters.postgres.db import transaction
-from app.config import settings
-from app.container import build_container
-from app.rag.query import _rerank, _retrieve
+from app.shared.adapters.postgres.db import transaction
+from app.shared.config import settings
+from app.shared.container import build_container
+from app.retrieval.rag.query import _rerank, _retrieve
 
 K_VALUES = [1, 3, 5, 10]
 FETCH_K = 20  # chunks retrieved+reranked BEFORE dedup to docs -- wider than the

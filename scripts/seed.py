@@ -12,8 +12,8 @@ from __future__ import annotations
 import secrets
 import sys
 
-from app.container import build_container
-from app.domain.models import Role
+from app.shared.container import build_container
+from app.shared.domain.models import Role
 
 
 def main() -> None:

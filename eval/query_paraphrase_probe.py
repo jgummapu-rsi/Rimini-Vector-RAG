@@ -2,7 +2,7 @@
 non-deterministic function of PHRASING, not just of meaning.
 
 Same underlying intent, four different phrasings of the same question, run
-through the REAL retrieval path (`app.rag.query._retrieve` -> real MiniLM
+through the REAL retrieval path (`app.retrieval.rag.query._retrieve` -> real MiniLM
 embed + real hybrid search: dense cosine + BM25, RRF-fused) against the real
 gateway-docs corpus already used by `eval/run_ragas.py`. For each phrasing we
 show the top-3 retrieved chunks (with their dense/BM25/fused scores) side by
@@ -22,10 +22,10 @@ import hashlib
 from itertools import combinations
 from pathlib import Path
 
-from app.container import build_container
-from app.domain.models import Role
-from app.ids import new_object_id
-from app.rag.query import _retrieve
+from app.shared.container import build_container
+from app.shared.domain.models import Role
+from app.shared.ids import new_object_id
+from app.retrieval.rag.query import _retrieve
 from eval.run_ragas import GOLDEN, _ingest_corpus
 
 TOP_K = 3

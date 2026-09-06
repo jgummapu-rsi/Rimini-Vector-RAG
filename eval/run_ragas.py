@@ -30,12 +30,12 @@ from ragas.metrics import (
     ResponseRelevancy,
 )
 
-from app.config import settings
-from app.container import build_container
-from app.domain.models import Document, Job, JobStage, JobStatus, Role
-from app.ids import new_object_id
-from app.pipeline.runner import run_job
-from app.rag.query import answer_query
+from app.shared.config import settings
+from app.shared.container import build_container
+from app.shared.domain.models import Document, Job, JobStage, JobStatus, Role
+from app.shared.ids import new_object_id
+from app.ingest.pipeline.runner import run_job
+from app.retrieval.rag.query import answer_query
 
 GOLDEN = Path(__file__).with_name("golden.json")
 

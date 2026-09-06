@@ -3,7 +3,7 @@ hybrid fusion, both feeding the same cross-encoder reranker, on full BEIR SciFac
 
 Isolates the fusion change from every other knob by calling
 `container.vectors.search()` DIRECTLY with an explicit `top_k=N` -- deliberately
-bypassing `app.rag.query._retrieve`'s `_fetch_k` widening -- so N is exactly the
+bypassing `app.retrieval.rag.query._retrieve`'s `_fetch_k` widening -- so N is exactly the
 number of fused candidates handed to the reranker (the user's "pass N to the
 reranker"). Then `_rerank` reorders that pool and we dedupe chunks to parent
 documents and score doc-level recall/nDCG@{1,3,5,10} + MRR@10 against SciFact's
@@ -34,10 +34,10 @@ import numpy as np
 import pandas as pd
 
 import ir_datasets
-from app.adapters.pgvector.db import transaction
-from app.config import settings
-from app.container import build_container
-from app.rag.query import _rerank
+from app.shared.adapters.pgvector.db import transaction
+from app.shared.config import settings
+from app.shared.container import build_container
+from app.retrieval.rag.query import _rerank
 
 K_VALUES = [1, 3, 5, 10]
 EVAL_TENANT_NAME = "scifact-eval-postgres-benchmark"

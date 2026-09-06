@@ -30,13 +30,19 @@ onnxruntime==1.20.1
 tokenizers==0.21.0
 huggingface_hub==0.27.0
 # Supplies the MSVC C++ runtime DLLs this Windows box lacks (needed by onnxruntime).
-msvc-runtime==14.44.35112
+msvc-runtime==14.44.35112; sys_platform == "win32"
+
 
 # --- Postgres + pgvector backends ---
 psycopg2-binary==2.9.10   # binary wheel avoids needing MSVC + libpq headers on Windows
 pgvector==0.3.6           # pgvector.psycopg2.register_vector: list/np.ndarray <-> `vector`
 
 # --- semantic answer cache (optional; only imported when REDIS_URL is set) ---
-# redis-py ships the RediSearch command helpers used for vector KNN; needs a
-# Redis with the search module (Redis Stack / Redis 8+) at runtime.
-redis==5.2.1
+# redis-py ships the RediSearch command helpers used for vector KNN. At runtime
+# this needs a Redis that actually HAS the query engine: Redis Stack, or Redis
+# Inc's own 8.x build. Distro packages of Redis 8 are not enough -- Ubuntu's
+# redis-server 8.0.5 ships only `vectorset`, and FT.CREATE is unknown there.
+# Deliberately a range, not a pin: 6.x renamed
+# `search.indexDefinition` -> `search.index_definition` (the adapter imports
+# both ways), so pinning to one side of that rename would be needlessly fragile.
+redis>=5.2.1,<9
