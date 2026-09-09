@@ -7,9 +7,10 @@
   dependency. This repo has no frontend toolchain and adding one to ship a
   couple of internal pages would be a poor trade. Everything it needs is
   already exposed by the API: /documents, /ingest, /jobs/{id}/trace,
-  /documents/{id}/chunks, /query (retrieval only), /answer (generation from
-  /query's chunks -- the Ask view chains both, same as any external caller
-  would).
+  /documents/{id}/chunks, /ask (cache-check first, retrieve+rerank+generate
+  only on a miss -- what the Ask view calls), plus /query (retrieval only)
+  and /answer (generation from /query's chunks) for a caller that wants to
+  bring their own LLM to the retrieved chunks instead.
 
   Served by FastAPI at /ui/, so it is same-origin with the API and needs no
   CORS. Ingest and Ask are two real "pages" (distinct hash routes, distinct
@@ -541,16 +542,15 @@ const reasonInfo = (k) => REASONS[k] || { ai: looksAI(k), text: k };
 
 /* The query-side walkthrough, same spirit as STAGES above: a durable, plain-
    language explanation of each control-flow step app.rag.query can take,
-   across BOTH calls the Ask view makes -- /query's retrieve_chunks builds
-   decompose/retrieve/rerank, and /answer's generate_answer_from_chunks
-   appends cache/generate on top of that same trace, so by the time we
-   render here it's one merged list either way. Only steps actually present
-   in a given answer's `trace` render — unlike ingestion this is a post-hoc
-   trace of one finished call, not a live-polled job, so there is no
-   "pending" state to show. */
+   for the single /ask call the Ask view makes -- answer_query checks the
+   cache first and only runs decompose/retrieve/rerank on a miss, appending
+   generate on top of that same trace. Only steps actually present in a given
+   answer's `trace` render — unlike ingestion this is a post-hoc trace of one
+   finished call, not a live-polled job, so there is no "pending" state to
+   show. */
 const QUERY_STAGES = {
   cache: { name: "Cache check",
-    what: "Checks whether you already got this exact answer recently. A hit skips generation and returns the stored answer instantly (retrieval via /query already ran by this point in the Ask view's two-call flow)." },
+    what: "Checks whether you already got this exact answer recently. A hit skips retrieval, reranking, and generation entirely and returns the stored answer instantly." },
   decompose: { name: "Decompose",
     what: "Checks whether this is really more than one question bundled together (e.g. “X vs Y”). If so, splits it into focused sub-questions so each gets an accurate search instead of one blurry combined one." },
   retrieve: { name: "Retrieve",
@@ -1151,25 +1151,17 @@ async function askQuestion() {
   const btn = $("askbtn");
   btn.disabled = true; btn.innerHTML = '<span class="btnspin"></span>Asking…';
   try {
-    // Two calls, not one: /query is retrieval-only (so any external caller
-    // can use it with their own LLM); /answer generates from exactly the
-    // chunks /query just returned, same as any other caller would chain them.
-    const retrieved = await api("/query", {
+    // One call: /ask checks the semantic cache FIRST and only retrieves+
+    // reranks on a miss, so a repeat question skips that cost entirely
+    // instead of paying it before the cache is ever checked (which is what
+    // chaining /query + /answer would do). Bring-your-own-LLM callers still
+    // use /query + /answer separately -- that path has no cache benefit
+    // either way, since the cache only holds answers this system's own
+    // gateway model generated.
+    const result = await api("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, top_k: topK }),
-    });
-    const result = await api("/answer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: retrieved.question,
-        contexts: retrieved.contexts,
-        chunk_ids: retrieved.chunk_ids,
-        scores: retrieved.scores,
-        citations: retrieved.citations,
-        sub_questions: retrieved.sub_questions,
-      }),
     });
     askHistory.unshift(result);
     askHistory = askHistory.slice(0, 30);

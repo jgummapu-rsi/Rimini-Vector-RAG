@@ -13,7 +13,7 @@ from app.shared.container import Container
 from app.shared.domain.models import Principal
 from app.shared.observability import bind
 from app.retrieval.rag.access import access_predicate
-from app.retrieval.rag.query import generate_answer_from_chunks, retrieve_chunks
+from app.retrieval.rag.query import answer_query, generate_answer_from_chunks, retrieve_chunks
 
 router = APIRouter()
 log = logging.getLogger("api")
@@ -23,6 +23,21 @@ class QueryRequest(BaseModel):
     """Body for `POST /query`."""
     question: str
     top_k: int = 10
+
+
+class AskRequest(BaseModel):
+    """Body for `POST /ask` -- the full round trip in one call: cache-check
+    -> retrieve+rerank (ONLY on a cache miss) -> generate -> cache-store.
+    Unlike chaining `/query` + `/answer`, retrieval and reranking are skipped
+    entirely on a cache hit instead of always running before the cache is
+    ever checked. Use this endpoint when you want this system's own
+    generated (and cached) answer; use `/query` + `/answer` separately to
+    bring your own LLM to the retrieved chunks instead -- that path has no
+    cache benefit regardless, since the cache only ever holds answers this
+    system's own gateway model produced."""
+    question: str
+    top_k: int = 10
+    model: Optional[str] = None
 
 
 class AnswerRequest(BaseModel):
@@ -72,6 +87,42 @@ def query(
         "sub_questions": result.sub_questions,
         "citations": result.citations,
         "trace": result.trace,
+    }
+
+
+@router.post("/ask")
+def ask(
+    req: AskRequest,
+    principal: Principal = Depends(get_principal),
+    container: Container = Depends(get_container),
+) -> dict:
+    """Cache-check first, retrieval+rerank only on a miss, then generate --
+    the fast path for a caller that just wants this system's own grounded
+    answer. See `AskRequest` for how this differs from chaining `/query` +
+    `/answer`."""
+    bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
+    container.metrics.incr("ask.requests")
+    t0 = perf_counter()
+    result = answer_query(
+        container, principal.tenant_id, req.question, req.top_k,
+        model=req.model, access=access_predicate(principal),
+        user_id=principal.user_id,
+    )
+    log.info("ask answered", extra={
+        "event": "ask", "hits": len(result.chunk_ids), "grounded": result.grounded,
+        "answer_len": len(result.answer),
+        "duration_ms": round((perf_counter() - t0) * 1000, 1),
+    })
+    return {
+        "question": result.question,
+        "answer": result.answer,
+        "contexts": result.contexts,
+        "chunk_ids": result.chunk_ids,
+        "scores": result.scores,
+        "sub_questions": result.sub_questions,
+        "citations": result.citations,
+        "trace": result.trace,
+        "grounded": result.grounded,
     }
 
 

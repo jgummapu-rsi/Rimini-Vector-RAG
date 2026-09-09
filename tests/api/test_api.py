@@ -100,6 +100,24 @@ def test_query_response_includes_citations_and_trace(client, container, tenant, 
     assert "chunk_id" in citation and "score" in citation
 
 
+def test_ask_returns_generated_answer_with_citations_and_trace(
+        client, container, tenant, files, monkeypatch):
+    monkeypatch.setattr(container.gateway, "chat",
+                         lambda messages, model, temperature=0.0: "stub answer")
+    client.post("/ingest", files={"file": ("notes.txt", files["notes.txt"])},
+                headers=_auth(tenant["member_token"]))
+    _drain(container)
+
+    r = client.post("/ask", json={"question": "quarterly review", "top_k": 5},
+                     headers=_auth(tenant["member_token"]))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["answer"] == "stub answer"
+    assert body["grounded"] is True
+    assert body["citations"] and body["citations"][0]["filename"] == "notes.txt"
+    assert any(t["stage"] == "rerank" for t in body["trace"])
+
+
 def test_document_metadata_extraction_surfaced_on_get(client, container, tenant, files, monkeypatch):
     monkeypatch.setattr(container.gateway, "chat", lambda messages, model, temperature=0.0: (
         '{"author": "Priya", "date": "2024-03-31", "topics": ["close checklist"], "entities": ["FI"]}'
