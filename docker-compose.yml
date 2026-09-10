@@ -57,6 +57,12 @@ x-app-env: &app-env
   MAX_UPLOAD_MB: "50"
   MAX_ATTEMPTS: "5"
   WORKER_POLL_SECONDS: "1.0"
+  # Default (120s) is too tight for image-heavy PDFs: each unreadable page needs
+  # a serial vision-LLM OCR call (~8-15s observed against the configured
+  # gateway), so a handful of scanned pages alone can exceed it. Kept below
+  # JOB_LEASE_SECONDS (300s, default) so a parse-stage timeout always fires
+  # and requeues the job before the lease reaper would also reclaim it.
+  PARSE_TIMEOUT_SECONDS: "240"
 
 services:
   postgres:
@@ -108,6 +114,18 @@ services:
       # separate network namespace and never see that entry, so route the
       # gateway hostname to the host machine explicitly. Update the hostname
       # here if the gateway address is ever regenerated.
+      #
+      # This alone is NOT enough: `az network bastion tunnel` (what the
+      # tunnel is built on, wrapped by `deploy.sh gateway`/`foundry`) always
+      # binds to 127.0.0.1 on the host, with no option to bind wider. A
+      # loopback-only listener refuses connections that arrive via
+      # `host-gateway`'s host IP -- this reproduces on Docker Desktop
+      # (Mac/Windows/WSL2) as well as native Linux Docker, not just one
+      # platform. Before `docker compose up`, relay the tunnel onto an
+      # interface Docker can reach:
+      #   ./scripts/gateway-relay.sh <tunnel-port>
+      # Leave that running in its own terminal. See the script's header for
+      # why this is necessary and scripts/gateway-relay.sh -h for usage.
       - "litellm-gateway.delightfulpebble-214bf13c.eastus2.azurecontainerapps.io:host-gateway"
     volumes:
       # Shared with `worker`: MiniLM embedder + cross-encoder reranker download
@@ -133,6 +151,8 @@ services:
     command: ["python", "-m", "app.ingest.worker"]
     environment: *app-env
     extra_hosts:
+      # See the api service's extra_hosts comment above -- same gateway,
+      # same tunnel, same relay requirement (scripts/gateway-relay.sh).
       - "litellm-gateway.delightfulpebble-214bf13c.eastus2.azurecontainerapps.io:host-gateway"
     volumes:
       - hf_cache:/root/.cache/huggingface
@@ -143,10 +163,16 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    # No HEALTHCHECK override: the worker is a long-running polling loop with
-    # no HTTP surface to probe (see app/worker.py). Plain container-restart-on
-    # -crash is the pragmatic baseline; a real liveness signal (e.g. a
-    # heartbeat row in the `metrics` table) is a reasonable follow-up.
+    # The Dockerfile bakes a HEALTHCHECK that curls http://localhost:8000/healthz
+    # for the api service; the worker overrides `command:` but inherits that
+    # HEALTHCHECK too, and never listens on port 8000 (it's a long-running
+    # polling loop with no HTTP surface -- see app/ingest/worker.py), so left
+    # alone it always fails and Docker reports the container "unhealthy" even
+    # while it's working fine. Disabled here; plain container-restart-on-crash
+    # is the pragmatic baseline. A real liveness signal (e.g. a heartbeat row
+    # in the `metrics` table) is a reasonable follow-up.
+    healthcheck:
+      disable: true
 
 volumes:
   pgdata:

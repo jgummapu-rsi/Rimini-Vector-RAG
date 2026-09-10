@@ -207,6 +207,14 @@ deliberately does **not** ship `pytest`/`tests/` (dev-only, see the
 `Dockerfile` comment) — run the test suite from a local venv (below), not
 inside the container.
 
+If your LiteLLM gateway is only reachable through the Foundry landing-zone
+Bastion tunnel (`deploy.sh gateway`/`foundry`), run
+`./scripts/gateway-relay.sh <tunnel-port>` in its own terminal **before**
+`docker compose up` — the tunnel binds to `127.0.0.1` on the host only, which
+the api/worker containers can't reach on their own (this reproduces on Docker
+Desktop for Mac/Windows/WSL2, not just native Linux Docker); see
+`docker-compose.yml`'s `extra_hosts` comment for why.
+
 **Local venv (no Docker):**
 
 ```bash
