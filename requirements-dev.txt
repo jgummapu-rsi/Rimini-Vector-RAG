@@ -1,5 +1,10 @@
 -r requirements.txt
 
+# --- lint (CI `lint` job; see ruff.toml) ---
+# The CI job installs just this line rather than the whole file, by grepping for
+# `^ruff==` -- keep the pin in that exact form or the workflow won't find it.
+ruff==0.16.6
+
 # --- test-only ---
 pytest==8.3.4
 fpdf2==2.8.1        # synthesize small PDF fixtures in tests

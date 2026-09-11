@@ -325,10 +325,20 @@ Organized by priority. 🔴 = correctness/security (blocks any real deployment),
     the correlation-context plumbing in `observability.py` is already
     trace-shaped, this is mostly exporter wiring), and configure alerting on
     dead-letter rate, stage latency, and gateway error rate.
-11. **No containerization/CI/CD/IaC** yet — needed for reproducible deploys.
-    Dockerfile + a CI pipeline (lint, `pytest`, build) is the near-term bar;
-    IaC (Terraform/Bicep) for the Postgres+pgvector infra follows once a target
-    cloud is chosen.
+11. **CI/CD partially done; no IaC.** ~~No containerization/CI~~ — `Dockerfile` +
+    `.github/workflows/ci.yml` now cover the near-term bar. CI v1 runs four jobs
+    on every PR and push to `main`: `test` (blocking — the full suite on Python
+    3.12, with a `redis/redis-stack-server` service so the 15 answer-cache tests
+    actually run rather than silently skipping, and an `actions/cache` of the two
+    HuggingFace ONNX models), `secrets` (blocking — gitleaks over working tree
+    *and* full history), `build` (blocking — image builds, nothing pushed), and
+    `lint` (**advisory only** — `ruff check` + `ruff format --check`, config in
+    `ruff.toml`). Deliberately absent, and why: no Postgres/pgvector service (no
+    test connects to either — see item #23), and no LiteLLM credentials (the
+    suite stubs that boundary, so a real key would buy zero coverage). Still
+    open: flip `lint` to blocking once its backlog clears, no image push to a
+    registry, and IaC (Terraform/Bicep) for the Postgres+pgvector infra once a
+    target cloud is chosen.
 12. **No load/chaos testing** — worker throughput under concurrent multi-tenant
     load, gateway rate-limit/backoff behavior under sustained traffic, and
     behavior when Postgres/pgvector is under contention are all unverified.
@@ -336,6 +346,19 @@ Organized by priority. 🔴 = correctness/security (blocks any real deployment),
     horizontally behind a load balancer in principle (no in-process state beyond
     the composition root), but this hasn't been load-tested with multiple API
     replicas hitting the same Postgres instance.
+23. **No Postgres/pgvector integration tests** — surfaced while building CI v1.
+    Both adapters are the backends this deployment actually runs, yet *no test
+    opens a connection to either*: `tests/retrieval/test_access.py` exercises
+    `acl_pushdown` as a pure function, asserting on generated SQL strings only.
+    So a `VECTOR_BACKEND`/`METADATA_BACKEND` flip is verified by hand, never by
+    the suite. This is why CI deliberately ships no Postgres service container —
+    the gap is the tests, not the infrastructure. Write connection-level tests
+    first, then add a `pgvector/pgvector:pg16` service (the image
+    `docker-compose.yml` already uses) to the `test` job. Note item #15's
+    standing requirement that a backend flip must not change ranking for the
+    same query — that is exactly the invariant these tests should pin.
+    (Numbered 23, out of section order, on purpose: this list is append-only so
+    that existing cross-references like "item #5"/"#14"/"#22" stay valid.)
 
 ### 🟡 Retrieval quality — works, but leaves value on the table
 

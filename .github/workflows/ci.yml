@@ -1,0 +1,198 @@
+# CI v1 -- closes the "no containerization/CI/CD" half of CLAUDE.md roadmap #11.
+#
+# Four independent jobs, deliberately not chained with `needs:`. They run in
+# parallel, and a lint nit should never stop you from learning that the test
+# suite is red.
+#
+#   lint     ADVISORY (continue-on-error) -- see ruff.toml for the flip-to-blocking plan
+#   test     BLOCKING -- the full 345-test suite, incl. the 15 Redis answer-cache tests
+#   secrets  BLOCKING -- gitleaks over both the working tree and full history
+#   build    BLOCKING -- image builds; nothing is pushed
+#
+# What this pipeline deliberately does NOT do, and why:
+#   * No Postgres/pgvector service. No test opens a connection to either today
+#     (tests/retrieval/test_access.py asserts on generated SQL strings only --
+#     acl_pushdown is a pure function), so a service container would exercise
+#     nothing while adding a moving part. Add it WITH the integration tests.
+#   * No LiteLLM / Azure Foundry credentials. The suite stubs that boundary
+#     outright: httpx.Client is monkeypatched in tests/shared/test_gateway_client.py
+#     and container.gateway.chat is stubbed in tests/conftest.py. Handing PR CI a
+#     real key would buy zero coverage and widen the blast radius of a bad PR.
+#   * No `.env`. tests/conftest.py builds Settings explicitly, and Settings reads
+#     .env when present -- so its ABSENCE here is the correct, tested state.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A PR that gets three pushes in a minute should run CI once, on the last one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"   # matches Dockerfile's `FROM python:3.12-slim`
+
+jobs:
+  # --------------------------------------------------------------------------
+  lint:
+    name: ruff (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Install ONLY ruff, at the version pinned in requirements-dev.txt, rather
+      # than the whole dev stack (ragas/jupyter/langchain) that lint doesn't
+      # need. Reading the pin out of the file keeps one source of truth -- a
+      # second literal version here would drift silently.
+      - name: Install ruff
+        run: pip install "$(grep -E '^ruff==' requirements-dev.txt)"
+
+      - name: ruff check
+        continue-on-error: true
+        run: ruff check . --output-format=github
+
+      - name: ruff format --check
+        continue-on-error: true
+        run: ruff format --check .
+
+  # --------------------------------------------------------------------------
+  test:
+    name: pytest (py3.12)
+    runs-on: ubuntu-latest
+
+    services:
+      # MUST be redis-stack-server, not plain redis: the answer-cache adapter
+      # needs FT.CREATE (RediSearch), and tests/retrieval/test_answer_cache.py
+      # explicitly asserts the `search` module is loaded before it will run.
+      # Pinned to an exact tag -- docker-compose.yml uses :latest, which is right
+      # for local dev and wrong for a reproducible CI check.
+      redis:
+        image: redis/redis-stack-server:7.4.0-v8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      TEST_REDIS_URL: redis://localhost:6379
+      # Pin the HF cache location instead of inheriting a runner default, so the
+      # cache step below and the download path can't drift apart.
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      # The suite's only real external dependency: two ONNX models (~200MB)
+      # pulled from HuggingFace on first use --
+      #   Xenova/all-MiniLM-L6-v2        (app/shared/adapters/embedders/minilm.py)
+      #   Xenova/ms-marco-MiniLM-L-6-v2  (app/retrieval/adapters/rerankers/cross_encoder.py)
+      # Keyed on the files that NAME those models, so the key rotates when a
+      # model changes and only then.
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-${{ runner.os }}-${{ hashFiles('app/shared/adapters/embedders/minilm.py', 'app/retrieval/adapters/rerankers/cross_encoder.py', 'app/shared/config.py') }}
+          restore-keys: hf-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # test_answer_cache.py's 15 tests are gated by a module-level skipif
+      # evaluated AT COLLECTION TIME. If Redis were missing or shipped without
+      # RediSearch, those tests would skip silently and this job would go green
+      # having covered nothing -- a hollow check is worse than no check.
+      #
+      # So: assert the gate is open, using the test module's OWN predicate. Any
+      # other formulation could drift from what actually decides the skip.
+      - name: Verify RediSearch is available (guards against a silent skip)
+        run: |
+          python - <<'PY'
+          import sys
+          from tests.retrieval.test_answer_cache import _redis_ready
+          if not _redis_ready():
+              sys.exit(
+                  "RediSearch not reachable at TEST_REDIS_URL. The 15 answer-cache "
+                  "tests would silently skip. Check the redis-stack-server service."
+              )
+          print("RediSearch available -- answer-cache tests will run.")
+          PY
+
+      # -rs prints the reason for any skip, so an unexpected one is visible in
+      # the log rather than buried in a dot.
+      - name: Run tests
+        run: pytest -rs
+
+  # --------------------------------------------------------------------------
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 -- the history scan below needs every commit, not just HEAD.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The gitleaks BINARY, not gitleaks/gitleaks-action@v2: the action requires
+      # a GITLEAKS_LICENSE secret for organization-owned repos. The tool itself is
+      # MIT/Apache and needs no license -- only the action wrapper is gated. Using
+      # the binary keeps a secret out of PR CI, which is the point of this job.
+      - name: Scan working tree
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 dir . --no-banner --redact
+
+      # Catches a credential that was committed and then "removed" in a later
+      # commit -- still sitting in history, still compromised.
+      - name: Scan full git history
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 git . --no-banner --redact
+
+  # --------------------------------------------------------------------------
+  build:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # push: false -- v1 verifies the image BUILDS. Publishing needs a registry
+      # and credentials decision that hasn't been made.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: rimini-vector-rag:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # docker-compose.yml is the primary entry point in README.md, but nothing
+      # else in CI parses it. Near-free insurance against a typo that only
+      # surfaces for whoever next runs `docker compose up`.
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
