@@ -122,11 +122,25 @@ app/
     static/onboarding/           onboarding UI (signup/login → optional gateway
                                  config gate → API token), mounted at `/`
     static/trace/                Document Trace UI — an ingestion-trace view AND an
-                                 "Ask" view that calls /query and renders the answer's
+                                 "Ask" view that calls /ask and renders the answer's
                                  Sources panel (clickable citations back to source
                                  passages); single self-contained page, no build step,
                                  mounted at `/ui` (trace at `/ui/trace`)
 ```
+
+**UI styling authority:** both static pages implement the **Rimini Street Brand
+Style Guide** (`docs/style_guide.md`) — light theme, `--sol`/`--rs-black`/`--white`
+core palette, the §2.3 gray scale (`--gray-5` and lighter are never text), the
+§2.4 darkened status colors, Proxima Nova with an Arial fallback, 8px card /
+6px button / 999px pill radii, the two shadow tokens, and ONLY the three
+approved gradients (Sol→White, Black→Gray-9, Gray-1→White). Each file's header
+comment records how it satisfies the four governing principles and where it
+deliberately departs (form-control borders use `--gray-6`, not `--gray-2`,
+because `--gray-2` measures 1.3:1 and Principle 3 requires 3:1 on interactive
+boundaries). Before changing anything visual in `app/api/static/`, read that
+header comment and the style guide — several rules there are non-obvious
+(Sol never sits behind body text; status always carries a text label, never
+color alone; `prefers-reduced-motion` must disable all animation).
 
 ```
 tests/     mirrors app/: tests/{ingest,retrieval,shared,api}/, conftest.py at tests/ root.

@@ -1,130 +1,373 @@
 <!doctype html>
 <!--
   Onboarding landing page — the first screen anyone hitting this deployment
-  sees. Role choice (Developer / General User) -> email+password login or
+  sees. Role choice (Developer / Business reader) -> email+password login or
   registration (POST /onboarding/register|login, provisions a tenant+admin
   user transparently) -> an optional LiteLLM gateway config gate -> either a
   Developer reference screen (endpoints + example payloads) or a redirect into
-  the existing Document Trace UI (/ui/), already authenticated.
+  the Document Trace UI (/ui/), already authenticated.
 
   Deliberately one self-contained file: no build step, no framework, no npm
   dependency -- same convention as app/api/static/trace/index.html. Served by
   FastAPI at site root (/), same-origin, no CORS needed.
 
-  tenant_id/user_id are internal implementation details and are never
-  rendered anywhere on this page -- only the bearer api_token (which the
-  developer path genuinely needs, to call the API from outside this UI).
+  tenant_id/user_id are internal implementation details and are never rendered
+  anywhere on this page -- only the bearer api_token (which the developer path
+  genuinely needs, to call the API from outside this UI).
+
+  ============================================================================
+  THEME — Rimini Street Brand Style Guide (docs/style_guide.md).
+  ============================================================================
+  Token set, type scale, logo rules, motion rules and voice rules are identical
+  to app/api/static/trace/index.html; the long-form rationale lives in that
+  file's header comment. The one thing specific to this page: it is the only
+  place the approved Sol -> White hero gradient (§2.5) is used at full strength.
+  Sol sits in the top band and in a 4px rule; the card that carries the body
+  copy is white and sits below it, because §1/§9 forbid Sol behind body text.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RAG Ingestion Layer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agentic AI Knowledge Base</title>
 <style>
-  :root {
-    color-scheme: dark;
-    --plane:          #0d0d0d;
-    --surface-1:      rgba(255,255,255,0.045);
-    --surface-solid:  #1a1a19;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --hairline:       rgba(251,226,50,0.16);
-    --series-1:       #3987e5;
-    --status-good:    #0ca30c;
-    --status-critical:#d03b3b;
-    --brand:          #FBE232;
-    --ink-on-brand:   #0A0A0A;
+/* ==========================================================================
+   TOKENS — verbatim from the Rimini Street Brand Style Guide
+   ========================================================================== */
+:root {
+  color-scheme: light;
+
+  --sol:            #FBE232;
+  --rs-black:       #161616;
+  --white:          #FFFFFF;
+
+  --yellow-1:       #FFFCEB;
+  --yellow-2:       #FEFAD7;
+  --yellow-3:       #FDF4AF;
+
+  --gray-1:         #F7F7F7;
+  --gray-2:         #E0E0E0;
+  --gray-3:         #C6C6C6;
+  --gray-4:         #A8A8A8;
+  --gray-5:         #8D8D8D;
+  --gray-6:         #6F6F6F;
+  --gray-7:         #525252;
+  --gray-9:         #262626;
+
+  --cyan:           #00B6ED;
+  --teal:           #007DA3;
+  --teal-ink:       #00728F;
+  --status-green:   #0E6027;   --status-green-bg:  #E4F6E9;
+  --status-red:     #A2191F;   --status-red-bg:    #FDE9EA;
+  --status-orange:  #8A3800;   --status-orange-bg: #FFF1E6;
+
+  --font: "proxima-nova", "Proxima Nova", Arial, Helvetica, sans-serif;
+  --track-eyebrow:  .04em;
+  --track-headline: -.01em;
+  --track-button:   .016em;
+
+  --radius:      8px;
+  --radius-btn:  6px;
+  --radius-pill: 999px;
+  --shadow:      0 1px 2px rgba(22,22,22,.05), 0 8px 24px rgba(22,22,22,.08);
+  --shadow-lg:   0 4px 12px rgba(22,22,22,.08), 0 20px 48px rgba(22,22,22,.16);
+
+  --ease: cubic-bezier(.2,.7,.2,1);
+
+  /* §4 — stacked Rimini Street logo, black and white variants. */
+  --rs-stacked: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 238 58'%3E%3Ctext x='0' y='40' font-family='proxima-nova, Proxima Nova, Arial, Helvetica, sans-serif' font-size='36' font-weight='700' letter-spacing='-0.4' fill='%23161616' textLength='218' lengthAdjust='spacingAndGlyphs'%3ERimini Street%3C/text%3E%3Ctext x='222' y='17' font-family='Arial, Helvetica, sans-serif' font-size='11' fill='%23161616'%3E&%23174;%3C/text%3E%3Crect x='0' y='47' width='238' height='7' fill='%23FBE232'/%3E%3C/svg%3E");
+  --rs-stacked-light: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 238 58'%3E%3Ctext x='0' y='40' font-family='proxima-nova, Proxima Nova, Arial, Helvetica, sans-serif' font-size='36' font-weight='700' letter-spacing='-0.4' fill='%23FFFFFF' textLength='218' lengthAdjust='spacingAndGlyphs'%3ERimini Street%3C/text%3E%3Ctext x='222' y='17' font-family='Arial, Helvetica, sans-serif' font-size='11' fill='%23FFFFFF'%3E&%23174;%3C/text%3E%3Crect x='0' y='47' width='238' height='7' fill='%23FBE232'/%3E%3C/svg%3E");
+}
+
+[hidden] { display: none !important; }
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { min-height: 100%; }
+
+body {
+  margin: 0;
+  color: var(--rs-black);
+  font-family: var(--font);
+  font-weight: 400;                 /* §3.1 — weight 300 is used nowhere */
+  font-size: 16px;                  /* §3.3 — body never drops below 16px */
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  background: var(--white);
+  display: flex; flex-direction: column;
+}
+
+a { color: var(--teal-ink); }
+:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; border-radius: 2px; }
+.on-sol :focus-visible, .btn-primary:focus-visible { outline-color: var(--rs-black); }
+
+.sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ==========================================================================
+   HEADER — §4: logo, divider, product name. Nothing else.
+   ========================================================================== */
+header.site {
+  display: flex; align-items: center; gap: 18px; padding: 26px 32px 0;
+  max-width: 1120px; width: 100%; margin: 0 auto; flex: 0 0 auto;
+}
+.logo {
+  display: block; width: 139px; height: 34px; flex: 0 0 auto;   /* §4 min width 48px */
+  background: var(--rs-stacked) left center / contain no-repeat;
+}
+.hdivider { width: 1px; height: 28px; background: var(--gray-3); flex: 0 0 auto; }
+.product  { font-size: 17px; font-weight: 700; letter-spacing: var(--track-headline); }
+
+/* ==========================================================================
+   SHELL
+   ========================================================================== */
+main.shell {
+  position: relative;
+  flex: 1; width: 100%; max-width: 1120px; margin: 0 auto;
+  padding: 44px 32px 72px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 520px; gap: 56px;
+  align-items: start;
+}
+/* §2.5 approved gradient #1: Sol -> White, as a large-area hero background.
+   It deliberately starts BELOW the header: §4 forbids placing the logo on a
+   busy background, and the logo's own Sol bar stops reading against Sol.
+   Everything that carries body copy (the card, the points) sits on white or on
+   the yellow tints, never on Sol itself (§1, §9). */
+main.shell::before {
+  content: ""; position: absolute; z-index: -1; top: 0;
+  left: 50%; transform: translateX(-50%); width: 100vw; height: 760px;
+  background: linear-gradient(172deg,
+      var(--sol) 0%, var(--sol) 5%, var(--yellow-2) 15%,
+      var(--yellow-1) 27%, var(--white) 54%);
+}
+@media (max-width: 940px) {
+  main.shell { grid-template-columns: minmax(0, 1fr); gap: 32px; padding: 32px 20px 56px; }
+  header.site { padding: 20px 20px 0; flex-wrap: wrap; gap: 12px; }
+}
+
+/* ==========================================================================
+   TYPE — §3.3
+   ========================================================================== */
+h1 { font-size: clamp(36px, 5vw, 58px); font-weight: 700; letter-spacing: var(--track-headline);
+     line-height: 1.06; margin: 0; }
+h2 { font-size: clamp(26px, 3vw, 34px); font-weight: 700; letter-spacing: var(--track-headline);
+     line-height: 1.1; margin: 0; }
+h3 { font-size: 18px; font-weight: 700; letter-spacing: var(--track-headline);
+     line-height: 1.2; margin: 0; }
+.eyebrow { font-size: 12px; font-weight: 600; text-transform: uppercase;
+           letter-spacing: var(--track-eyebrow); color: var(--gray-7); margin: 0 0 12px; }
+.lede    { font-size: 18px; color: var(--gray-7); margin: 18px 0 0; max-width: 46ch; }
+.hint    { font-size: 14.5px; color: var(--gray-7); margin: 14px 0 0; }
+
+/* The intro column's supporting points. Sol marks each one — a 3px rule, not
+   a fill (§1). */
+.points { list-style: none; margin: 30px 0 0; padding: 0; display: grid; gap: 18px; max-width: 46ch; }
+.points li { padding-left: 18px; border-left: 3px solid var(--sol); }
+.points b { display: block; font-size: 16px; font-weight: 700; letter-spacing: var(--track-headline); }
+.points span { font-size: 16px; color: var(--gray-7); }
+
+/* ==========================================================================
+   CARD
+   ========================================================================== */
+.card {
+  background: var(--white); border: 1px solid var(--gray-2);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  padding: 34px 36px;
+}
+@media (max-width: 940px) { .card { padding: 26px 22px; } }
+.card > h2 + p, .card > h2 + .sub { margin-top: 12px; }
+.sub { font-size: 16px; color: var(--gray-7); margin: 12px 0 0; }
+
+/* ==========================================================================
+   BUTTONS — §6: 6px radius. §3.2: +16 tracking. §8: uppercase by style.
+   ========================================================================== */
+.btn {
+  font: inherit; font-size: 13.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: var(--track-button);
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 12px 20px; border-radius: var(--radius-btn); cursor: pointer;
+  background: var(--white); color: var(--rs-black);
+  border: 1.5px solid var(--gray-6);   /* 3:1 interactive boundary; gray-2 measures 1.3:1 */
+  transition: background .18s var(--ease), border-color .18s var(--ease),
+              transform .15s var(--ease);
+  white-space: nowrap;
+}
+.btn:hover  { background: var(--yellow-1); border-color: var(--rs-black); }
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--sol); border-color: var(--sol); color: var(--rs-black); }
+.btn-primary:hover { background: var(--yellow-3); border-color: var(--rs-black); }
+.btn:disabled { background: var(--gray-1); color: var(--gray-6); border-color: var(--gray-4);
+                cursor: default; transform: none; }
+.row { display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap; }
+.row .btn { flex: 1 1 auto; }
+
+/* Role choice — full-width cards, not radio buttons: two very different paths
+   deserve two visible descriptions. Hover wash is --yellow-1 (§2.2). */
+.choice { display: grid; gap: 12px; margin-top: 26px; }
+.choicebtn {
+  position: relative; font: inherit; text-align: left; cursor: pointer;
+  padding: 18px 20px 18px 22px; border-radius: var(--radius);
+  border: 1.5px solid var(--gray-6); background: var(--white); color: var(--rs-black);
+  display: flex; align-items: flex-start; gap: 14px;
+  transition: background .18s var(--ease), border-color .18s var(--ease),
+              transform .18s var(--ease), box-shadow .18s var(--ease);
+}
+.choicebtn::before {
+  content: ""; position: absolute; left: -1.5px; top: 14px; bottom: 14px; width: 3px;
+  border-radius: 0 2px 2px 0; background: transparent;
+  transition: background .18s var(--ease);
+}
+.choicebtn:hover {
+  background: var(--yellow-1); border-color: var(--rs-black);
+  transform: translateY(-3px);              /* §7 — hover lift is 3px maximum */
+  box-shadow: var(--shadow);
+}
+.choicebtn:hover::before { background: var(--sol); }   /* §1 — Sol marks */
+.choicebtn svg { width: 24px; height: 24px; flex: 0 0 auto; stroke: var(--rs-black);
+                 margin-top: 2px; }
+.choicebtn b     { display: block; font-size: 18px; font-weight: 700;
+                   letter-spacing: var(--track-headline); }
+.choicebtn small { display: block; margin-top: 5px; font-size: 16px; font-weight: 400;
+                   color: var(--gray-7); line-height: 1.5; }
+
+/* ==========================================================================
+   TABS + FORM — §6: 1.5px control borders so focus does not shift layout
+   ========================================================================== */
+.tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--gray-2); margin-top: 26px; }
+.tabs button {
+  position: relative; font: inherit; font-size: 16px; font-weight: 600;
+  padding: 10px 0 13px; border: 0; background: none; color: var(--gray-7); cursor: pointer;
+  transition: color .18s var(--ease);
+}
+.tabs button::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px;
+  border-radius: 2px; background: transparent; transition: background .18s var(--ease);
+}
+.tabs button:hover  { color: var(--rs-black); }
+.tabs button.active { color: var(--rs-black); font-weight: 700; }
+.tabs button.active::after { background: var(--sol); }   /* §1 — Sol as active marker */
+
+label.lbl {
+  display: block; font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: var(--track-eyebrow); color: var(--gray-7); margin: 20px 0 7px;
+}
+input {
+  width: 100%; font: inherit; font-size: 16px; padding: 11px 13px;
+  border-radius: var(--radius); border: 1.5px solid var(--gray-6);
+  background: var(--white); color: var(--rs-black);
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+input::placeholder { color: var(--gray-6); }
+input:focus {
+  outline: none; border-color: var(--rs-black);
+  box-shadow: 0 0 0 3px var(--yellow-3);      /* §2.2 — yellow-3 is the focus glow */
+}
+
+/* §8 — error messages describe the failure and the recovery. */
+.err:not(:empty) {
+  margin: 20px 0 0; padding: 12px 14px; border-radius: var(--radius);
+  border: 1px solid var(--status-red); border-left-width: 3px;
+  background: var(--status-red-bg); color: var(--rs-black);
+  font-size: 14.5px; font-weight: 600;
+}
+
+/* ==========================================================================
+   TOKEN + CODE
+   ========================================================================== */
+.tokenfield {
+  display: flex; align-items: center; gap: 12px; margin-top: 10px;
+  background: var(--gray-1); border: 1px solid var(--gray-2);
+  border-left: 4px solid var(--sol);          /* §1 — Sol as an accent rule */
+  border-radius: var(--radius); padding: 13px 15px;
+}
+.tokenfield code {
+  flex: 1; min-width: 0; word-break: break-all; font-size: 14.5px; font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+pre {
+  background: var(--rs-black); color: var(--white);
+  border-radius: var(--radius); padding: 16px 18px; margin: 10px 0 0;
+  font-size: 14px; line-height: 1.6; overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
+code.inline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em;
+  background: var(--gray-1); border: 1px solid var(--gray-2); border-radius: 4px; padding: 1px 5px;
+}
+.block { margin-top: 26px; }
+.block > h3 + .hint { margin-top: 4px; }
+
+/* §2.5 approved gradient #3, Gray-1 -> White: the note that closes the page. */
+.note {
+  margin-top: 30px; padding: 18px 20px; border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--gray-1) 0%, var(--white) 100%);
+  border: 1px solid var(--gray-2); font-size: 14.5px; color: var(--gray-7);
+}
+.note b { color: var(--rs-black); }
+
+/* ==========================================================================
+   MOTION — §7
+   ========================================================================== */
+@keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+.card { animation: rise .55s var(--ease) backwards; }
+.card .choicebtn { animation: rise .5s var(--ease) backwards; }
+.card .choicebtn:nth-of-type(1) { animation-delay: 80ms; }
+.card .choicebtn:nth-of-type(2) { animation-delay: 160ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important; scroll-behavior: auto !important;
   }
-  [hidden] { display: none !important; }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body {
-    margin: 0; background:
-      radial-gradient(1100px circle at 10% -10%, rgba(251,226,50,0.10), transparent 45%),
-      radial-gradient(900px circle at 100% 0%, rgba(57,135,229,0.12), transparent 45%),
-      #000;
-    color: var(--text-primary);
-    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-    display: flex; align-items: center; justify-content: center; padding: 24px;
-  }
-  .card {
-    width: 100%; max-width: 480px; background: var(--surface-1);
-    border: 1px solid var(--hairline); border-radius: 18px; padding: 30px 32px;
-    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-    box-shadow: 0 10px 40px rgba(0,0,0,0.45);
-  }
-  .mark { width: 30px; height: 6px; background: var(--brand); border-radius: 3px; margin-bottom: 16px; }
-  h1 { font-size: 20px; margin: 0 0 6px; font-weight: 650; letter-spacing: -0.01em; }
-  p.sub { margin: 0 0 20px; color: var(--text-secondary); font-size: 13px; }
-  .choice { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
-  .btn {
-    font: inherit; font-size: 14px; padding: 11px 16px; border-radius: 11px;
-    cursor: pointer; border: 1px solid var(--hairline);
-    background: var(--surface-1); color: var(--text-primary);
-    transition: border-color .15s, background .15s, transform .1s; text-align: left;
-    width: 100%;
-  }
-  .btn:hover { border-color: var(--series-1); background: rgba(255,255,255,0.075); }
-  .btn:active { transform: scale(0.98); }
-  .btn.primary { background: var(--brand); color: var(--ink-on-brand); border-color: transparent;
-                 font-weight: 600; text-align: center; }
-  .btn.primary:hover { filter: brightness(1.06); }
-  .btn:disabled { opacity: .55; cursor: default; transform: none; }
-  .btn b { display: block; font-size: 14px; }
-  .btn small { display: block; margin-top: 3px; color: var(--text-secondary); font-weight: 400; }
-  .disclaimer {
-    font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--hairline);
-    padding-top: 14px; line-height: 1.6;
-  }
-  .disclaimer code { color: var(--text-secondary); }
-  label { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
-          color: var(--text-muted); font-weight: 600; margin: 14px 0 5px; }
-  label:first-of-type { margin-top: 0; }
-  input {
-    width: 100%; font: inherit; font-size: 13.5px; padding: 9px 11px; border-radius: 9px;
-    border: 1px solid var(--hairline); background: rgba(255,255,255,0.04);
-    color: var(--text-primary);
-  }
-  input:focus { outline: none; border-color: var(--series-1);
-                box-shadow: 0 0 0 3px rgba(57,135,229,0.22); }
-  .tabs { display: flex; gap: 4px; margin-bottom: 4px; }
-  .tabs button {
-    flex: 1; font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px;
-    border-radius: 9px 9px 0 0; border: none; cursor: pointer;
-    background: transparent; color: var(--text-muted);
-  }
-  .tabs button.active { background: var(--surface-1); color: var(--text-primary); }
-  .err { color: var(--status-critical); font-size: 12.5px; margin: 10px 0 0; min-height: 1em; }
-  .hint { color: var(--text-muted); font-size: 12px; margin: 10px 0 0; }
-  .row { display: flex; gap: 8px; margin-top: 16px; }
-  .row .btn { width: auto; flex: 1; }
-  .field {
-    display: flex; align-items: center; gap: 8px; background: var(--plane);
-    border: 1px solid var(--hairline); border-radius: 9px; padding: 9px 11px;
-    font-size: 12.5px; word-break: break-all; margin-top: 6px;
-  }
-  .field code { flex: 1; color: var(--brand); }
-  .copybtn { flex: 0 0 auto; background: transparent; border: none; color: var(--text-secondary);
-             cursor: pointer; font: inherit; font-size: 12px; }
-  pre {
-    background: var(--plane); border: 1px solid var(--hairline); border-radius: 9px;
-    padding: 12px; font-size: 11.5px; overflow-x: auto; margin: 6px 0 16px;
-    color: var(--text-secondary); white-space: pre-wrap; word-break: break-all;
-  }
-  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-       color: var(--text-muted); margin: 20px 0 4px; font-weight: 650; }
-  h2:first-of-type { margin-top: 4px; }
+}
 </style>
 </head>
 <body>
 
-<div class="card" id="card"></div>
+<header class="site">
+  <!-- §4: never place "Rimini Street" as text beside the logo; the logo says it.
+       Logo + divider + product name only. -->
+  <span class="logo" role="img" aria-label="Rimini Street"></span>
+  <span class="hdivider" aria-hidden="true"></span>
+  <span class="product">Agentic AI Knowledge Base</span>
+</header>
+
+<main class="shell">
+  <div class="intro">
+    <p class="eyebrow">Agentic AI</p>
+    <h1>Turn your documents into answers.</h1>
+    <p class="lede">Drop in a contract, a spreadsheet or a scanned report. It is parsed,
+       chunked, embedded and indexed — then any question you ask is answered from your
+       own content, with the exact passages it came from.</p>
+    <ul class="points">
+      <li><b>Structure first, AI only when structure runs out</b>
+          <span>Real text and tables are read with plain parsers, free. The vision model is
+                called only for genuinely unreadable pages.</span></li>
+      <li><b>Scoped to you</b>
+          <span>Your account maps to a private tenant. Access rules are enforced before
+                ranking, not after.</span></li>
+      <li><b>Every answer is traceable</b>
+          <span>See which passages an answer was grounded in, and the ingestion trace of
+                the document each one came from.</span></li>
+    </ul>
+  </div>
+
+  <div class="card" id="card"></div>
+</main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let role = null;          // "developer" | "general"
+let role = null;          // "developer" | "reader"
 let apiToken = null;
+
+/* 24x24 stroke icons, §5. Decorative, so aria-hidden + focusable=false — the
+   text beside each one carries the meaning (§5: icons never carry meaning
+   alone). */
+const ICONS = {
+  developer: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m8 17-5-5 5-5"/><path d="m16 7 5 5-5 5"/></svg>`,
+  reader: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5a2 2 0 0 1 2-2h6v18H6a2 2 0 0 1-2-2z"/><path d="M20 5a2 2 0 0 0-2-2h-6v18h6a2 2 0 0 0 2-2z"/></svg>`,
+};
 
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
@@ -132,40 +375,56 @@ async function api(path, opts = {}) {
   let body = {};
   try { body = await res.json(); } catch (_e) { /* no body */ }
   if (!res.ok) {
-    const err = new Error(body.detail || `request failed (${res.status})`);
+    const err = new Error(body.detail || `The request failed (${res.status}). Try again in a moment.`);
     err.status = res.status;
     throw err;
   }
   return body;
 }
 
-function render(html) { $("card").innerHTML = html; }
+function render(html) {
+  const card = $("card");
+  card.innerHTML = html;
+  // Re-trigger the entrance animation on every screen change (§7: first
+  // appearance only — each screen IS a first appearance).
+  card.style.animation = "none";
+  void card.offsetWidth;
+  card.style.animation = "";
+}
 
 // ------------------------------------------------------------- screen: welcome
 function screenWelcome() {
+  document.title = "Agentic AI Knowledge Base";
   render(`
-    <div class="mark"></div>
-    <h1>Welcome</h1>
-    <p class="sub">How are you using this deployment?</p>
+    <p class="eyebrow">Get started</p>
+    <h2>How will you use this?</h2>
+    <p class="sub">Pick the path that fits. You can switch later by signing in again.</p>
     <div class="choice">
-      <button class="btn" id="pickDev">
-        <b>I'm a Developer</b>
-        <small>Get the API endpoints, your token, and example request payloads.</small>
+      <button class="choicebtn" id="pickDev" type="button">
+        ${ICONS.developer}
+        <span>
+          <b>Developer</b>
+          <small>Get the API endpoints, your bearer token, and example request payloads.</small>
+        </span>
       </button>
-      <button class="btn" id="pickGeneral">
-        <b>I'm a General User</b>
-        <small>Go straight to the interactive ingestion &amp; ask UI.</small>
+      <button class="choicebtn" id="pickReader" type="button">
+        ${ICONS.reader}
+        <span>
+          <b>Business reader</b>
+          <small>Go straight to the portal — drop documents in, watch them index, and ask
+                 questions about them.</small>
+        </span>
       </button>
     </div>
-    <div class="disclaimer">
-      This stack runs <code>Postgres</code> (with the <code>pgvector</code> extension) and
-      <code>Redis</code> (redis-stack) as part of Docker Compose. Both must be healthy for
-      ingestion and query to work — check with <code>docker compose ps</code> if something
-      looks stuck.
+    <div class="note">
+      <b>Before you start:</b> this stack runs <code class="inline">Postgres</code> (with the
+      <code class="inline">pgvector</code> extension) and <code class="inline">Redis</code>
+      (redis-stack) alongside the API. Both must be healthy for ingestion and query to work —
+      run <code class="inline">docker compose ps</code> if something looks stuck.
     </div>
   `);
   $("pickDev").onclick = () => { role = "developer"; screenAuth(); };
-  $("pickGeneral").onclick = () => { role = "general"; screenAuth(); };
+  $("pickReader").onclick = () => { role = "reader"; screenAuth(); };
 }
 
 // ---------------------------------------------------------------- screen: auth
@@ -174,31 +433,40 @@ function screenAuth() {
 
   function draw() {
     render(`
-      <div class="mark"></div>
-      <h1>${role === "developer" ? "Developer" : "General user"} sign-in</h1>
-      <p class="sub">Your account maps to a private tenant — nobody else sees your data.</p>
-      <div class="tabs">
-        <button id="tabRegister" class="${mode === "register" ? "active" : ""}">Create account</button>
-        <button id="tabLogin" class="${mode === "login" ? "active" : ""}">Log in</button>
+      <p class="eyebrow">${role === "developer" ? "Developer access" : "Portal access"}</p>
+      <h2>${mode === "register" ? "Create your account" : "Welcome back"}</h2>
+      <p class="sub">Your account maps to a private tenant — your documents are visible to
+         nobody else.</p>
+      <div class="tabs" role="tablist">
+        <button id="tabRegister" type="button" role="tab"
+                aria-selected="${mode === "register"}"
+                class="${mode === "register" ? "active" : ""}">Create account</button>
+        <button id="tabLogin" type="button" role="tab"
+                aria-selected="${mode === "login"}"
+                class="${mode === "login" ? "active" : ""}">Log in</button>
       </div>
-      <div style="background:var(--surface-1);border-radius:0 9px 9px 9px;padding:16px;">
-        ${mode === "register" ? `
-          <label for="dname">Name (optional)</label>
-          <input id="dname" placeholder="Acme Inc.">
-        ` : ``}
-        <label for="email">Email</label>
-        <input id="email" type="email" placeholder="you@example.com" autocomplete="username">
-        <label for="password">Password</label>
-        <input id="password" type="password" placeholder="••••••••" autocomplete="${mode === "register" ? "new-password" : "current-password"}">
-        <div class="row">
-          <button class="btn primary" id="submit">${mode === "register" ? "Create account" : "Log in"}</button>
-        </div>
-        <p class="err" id="err"></p>
+      ${mode === "register" ? `
+        <label class="lbl" for="dname">Organization name (optional)</label>
+        <input id="dname" placeholder="Meridian Health Systems">
+      ` : ``}
+      <label class="lbl" for="email">Email</label>
+      <input id="email" type="email" placeholder="dana.reyes@meridianhealth.com" autocomplete="username">
+      <label class="lbl" for="password">Password</label>
+      <input id="password" type="password"
+             autocomplete="${mode === "register" ? "new-password" : "current-password"}">
+      <div class="row">
+        <button class="btn" id="back" type="button">Back</button>
+        <button class="btn btn-primary" id="submit" type="button">${
+          mode === "register" ? "Create account" : "Log in"}</button>
       </div>
+      <p class="err" id="err" role="alert"></p>
     `);
     $("tabRegister").onclick = () => { mode = "register"; draw(); };
     $("tabLogin").onclick = () => { mode = "login"; draw(); };
+    $("back").onclick = () => screenWelcome();
     $("submit").onclick = () => submit();
+    ["email", "password"].forEach((id) =>
+      $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); }));
   }
 
   async function submit() {
@@ -206,7 +474,13 @@ function screenAuth() {
     const password = $("password").value;
     const btn = $("submit"), err = $("err");
     err.textContent = "";
+    if (!email || !password) {
+      err.textContent = "Enter both an email and a password to continue.";
+      return;
+    }
     btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = mode === "register" ? "Creating…" : "Logging in…";
     try {
       if (mode === "register") {
         const display_name = $("dname").value.trim() || undefined;
@@ -222,14 +496,18 @@ function screenAuth() {
       }
       await screenGatewayGateOrProceed();
     } catch (e) {
+      // §8 — describe the failure and the recovery; never blame the person.
       if (e.status === 409) {
-        err.textContent = "An account with this email already exists — switch to Log in.";
+        err.textContent = "An account already exists for this email. Switch to Log in to continue.";
       } else if (e.status === 401) {
-        err.textContent = "Invalid email or password.";
+        err.textContent = "That email and password did not match. Check them and try again.";
+      } else if (e.status === 429) {
+        err.textContent = "Too many attempts from here. Wait a few minutes, then try again.";
       } else {
         err.textContent = e.message;
       }
       btn.disabled = false;
+      btn.textContent = original;
     }
   }
 
@@ -245,26 +523,28 @@ async function screenGatewayGateOrProceed() {
 
 function screenGateway() {
   render(`
-    <div class="mark"></div>
-    <h1>Connect your LLM gateway</h1>
-    <p class="sub">Needed for answer generation (<code>/query</code>, <code>/chat</code>) and
-       vision OCR on scanned pages. Not needed for ingestion of text-native documents or for
-       search itself, which run on a local embedding model.</p>
-    <label for="baseUrl">LiteLLM base URL</label>
-    <input id="baseUrl" placeholder="https://your-litellm-gateway.example.com">
-    <label for="apiKey">LiteLLM API key</label>
-    <input id="apiKey" type="password" placeholder="sk-...">
+    <p class="eyebrow">One more step</p>
+    <h2>Connect your LLM gateway</h2>
+    <p class="sub">This is what generates answers (<code class="inline">/ask</code>,
+       <code class="inline">/answer</code>) and reads scanned pages with the vision model.
+       Ingesting text-native documents and searching them both run on a local embedding
+       model, so you can skip this and set it later.</p>
+    <label class="lbl" for="baseUrl">LiteLLM base URL</label>
+    <input id="baseUrl" placeholder="https://gateway.meridianhealth.com">
+    <label class="lbl" for="apiKey">LiteLLM API key</label>
+    <input id="apiKey" type="password" placeholder="sk-8f2c4a91d7e35b06">
     <div class="row">
-      <button class="btn" id="skip">Skip for now</button>
-      <button class="btn primary" id="save">Save &amp; continue</button>
+      <button class="btn" id="skip" type="button">Skip for now</button>
+      <button class="btn btn-primary" id="save" type="button">Save and continue</button>
     </div>
-    <p class="err" id="err"></p>
+    <p class="err" id="err" role="alert"></p>
   `);
   $("skip").onclick = () => proceed();
   $("save").onclick = async () => {
     const err = $("err"), btn = $("save");
     err.textContent = "";
     btn.disabled = true;
+    btn.textContent = "Saving…";
     try {
       await api("/onboarding/gateway-config", {
         method: "POST",
@@ -275,14 +555,15 @@ function screenGateway() {
     } catch (e) {
       err.textContent = e.message;
       btn.disabled = false;
+      btn.textContent = "Save and continue";
     }
   };
 }
 
 // --------------------------------------------------------------------- routing
 function proceed() {
-  if (role === "general") {
-    // Exact key the existing Trace UI (app/api/static/trace/index.html) reads
+  if (role === "reader") {
+    // Exact key the Document Trace UI (app/api/static/trace/index.html) reads
     // on load -- pre-seeding it here skips its own paste-a-token gate.
     localStorage.setItem("rag_trace_token", apiToken);
     window.location.href = "/ui/";
@@ -294,30 +575,59 @@ function proceed() {
 function screenDeveloper() {
   const origin = window.location.origin;
   render(`
-    <div class="mark"></div>
-    <h1>You're set up</h1>
-    <p class="sub">Use this token to call the API directly. Keep it secret — it authenticates
-       as an admin of your tenant.</p>
-    <div class="field"><code id="tok">${apiToken}</code>
-      <button class="copybtn" id="copyTok">copy</button></div>
+    <p class="eyebrow">Developer access</p>
+    <h2>You are set up</h2>
+    <p class="sub">This bearer token authenticates as an admin of your tenant. Keep it
+       secret; logging in again issues a new one and invalidates this one.</p>
 
-    <h2>Ingest a document</h2>
-    <pre id="ingestEx">curl -X POST "${origin}/ingest" \\
+    <div class="tokenfield">
+      <code id="tok">${apiToken}</code>
+      <button class="btn" id="copyTok" type="button">Copy</button>
+    </div>
+
+    <div class="block">
+      <h3>Ingest a document</h3>
+      <pre>curl -X POST "${origin}/ingest" \\
   -H "Authorization: Bearer ${apiToken}" \\
-  -F "file=@document.pdf" \\
+  -F "file=@agreement.pdf" \\
   -F "scope=tenant" \\
   -F "visibility=private"</pre>
+    </div>
 
-    <h2>Ask a question</h2>
-    <pre id="queryEx">curl -X POST "${origin}/query" \\
+    <div class="block">
+      <h3>Ask a question</h3>
+      <pre>curl -X POST "${origin}/ask" \\
   -H "Authorization: Bearer ${apiToken}" \\
   -H "Content-Type: application/json" \\
-  -d '{"question": "What does this document say about revenue?", "top_k": 10}'</pre>
+  -d '{"question": "What are the payment terms?", "top_k": 10}'</pre>
+    </div>
 
-    <p class="hint">Full route list, request/response shapes, and RBAC rules: see the OpenAPI
-      docs at <code>${origin}/docs</code>.</p>
+    <div class="row">
+      <button class="btn" id="toPortal" type="button">Open the portal</button>
+      <a class="btn btn-primary" href="${origin}/docs" style="text-decoration:none;text-align:center">API reference</a>
+    </div>
+
+    <div class="note">
+      <b>Also available:</b> <code class="inline">/query</code> returns retrieved passages
+      only, and <code class="inline">/answer</code> generates from passages you pass back —
+      use that pair if you want to bring your own model. Full route list, request and
+      response shapes, and the RBAC rules are in the OpenAPI docs.
+    </div>
   `);
-  $("copyTok").onclick = () => navigator.clipboard.writeText(apiToken);
+  $("copyTok").onclick = async () => {
+    const btn = $("copyTok");
+    try {
+      await navigator.clipboard.writeText(apiToken);
+      btn.textContent = "Copied";                 // §8 — past tense, states what happened
+      setTimeout(() => { btn.textContent = "Copy"; }, 2200);
+    } catch {
+      btn.textContent = "Select it";
+    }
+  };
+  $("toPortal").onclick = () => {
+    localStorage.setItem("rag_trace_token", apiToken);
+    window.location.href = "/ui/";
+  };
 }
 
 screenWelcome();
