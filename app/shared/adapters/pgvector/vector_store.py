@@ -66,12 +66,18 @@ def acl_pushdown(access) -> tuple[str, tuple]:
     """
     if access is None:
         return "", ()
+    clauses = ""
+    params: list = []
+    document_ids = getattr(access, "document_ids", None)
+    if document_ids is not None:
+        clauses += " AND document_id = ANY(%s)"
+        params.append(list(document_ids))
     if getattr(access, "sees_everything", False):
-        return "", ()
+        return clauses, tuple(params)
     user_id = getattr(access, "user_id", None)
     if not user_id:
-        return "", ()
-    return _ACL_SQL, (user_id, user_id)
+        return clauses, tuple(params)
+    return clauses + _ACL_SQL, (*params, user_id, user_id)
 
 
 class PgVectorStore(VectorStore):
@@ -138,10 +144,31 @@ class PgVectorStore(VectorStore):
             cur.execute("CREATE INDEX IF NOT EXISTS idx_vc_tsv "
                         "ON vector_chunks USING gin (tsv)")
 
+    def reset_collection(self, dim: int) -> dict[str, int]:
+        """Clear ingested test data and recreate the vector table at `dim`."""
+        ddl = _SCHEMA.read_text(encoding="utf-8").format(
+            dim=dim,
+            hnsw_m=self.hnsw_m,
+            hnsw_ef_construction=self.hnsw_ef_construction,
+        )
+        with transaction(self.dsn) as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM documents")
+            document_count = cur.fetchone()["n"]
+            cur.execute("SELECT COUNT(*) AS n FROM vector_chunks")
+            vector_count = cur.fetchone()["n"]
+            cur.execute(
+                "TRUNCATE TABLE job_events, chunks, ingestion_jobs, documents, vector_chunks"
+            )
+            cur.execute("DROP TABLE vector_chunks")
+            cur.execute(ddl)
+        self.dim = dim
+        return {"documents": document_count, "vectors": vector_count}
+
     def upsert(self, points: list[VectorPoint]) -> None:
         """Insert or replace the given chunk points."""
         if not points:
             return
+        self.ensure_collection(len(points[0].vector))
         with transaction(self.dsn) as cur:
             for p in points:
                 if len(p.vector) != self.dim:

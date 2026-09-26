@@ -60,6 +60,11 @@ class PostgresMetadataStore(MetadataStore):
                         ALTER TABLE users
                             ADD COLUMN IF NOT EXISTS password_hash TEXT;
                     END IF;
+                    IF EXISTS (SELECT 1 FROM information_schema.tables
+                               WHERE table_name = 'documents') THEN
+                        ALTER TABLE documents ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ;
+                        ALTER TABLE documents ADD COLUMN IF NOT EXISTS promoted_by_user_id TEXT;
+                    END IF;
                 END $$;
             """)
             cur.execute(_SCHEMA.read_text(encoding="utf-8"))
@@ -188,6 +193,20 @@ class PostgresMetadataStore(MetadataStore):
                 ),
             )
 
+    def promote_document(
+        self, tenant_id: str, document_id: str, user_id: str
+    ) -> Optional[Document]:
+        """Mark a tenant-owned document as promoted, idempotently."""
+        with transaction(self.dsn) as cur:
+            cur.execute(
+                "UPDATE documents SET promoted_at = COALESCE(promoted_at, now()), "
+                "promoted_by_user_id = COALESCE(promoted_by_user_id, %s) "
+                "WHERE tenant_id = %s AND id = %s RETURNING *",
+                (user_id, tenant_id, document_id),
+            )
+            row = cur.fetchone()
+        return _row_to_document(row) if row else None
+
     def get_document(self, tenant_id: str, document_id: str) -> Optional[Document]:
         """A document is fetchable if it belongs to this tenant, OR it is
         scope=global (readable cross-tenant; write/delete stay tenant-owned --
@@ -245,6 +264,17 @@ class PostgresMetadataStore(MetadataStore):
             cur.execute(
                 "SELECT * FROM ingestion_jobs WHERE tenant_id = %s AND id = %s",
                 (tenant_id, job_id),
+            )
+            row = cur.fetchone()
+        return _row_to_job(row) if row else None
+
+    def get_latest_job(self, tenant_id: str, document_id: str) -> Optional[Job]:
+        """Fetch the newest ingestion job for a document."""
+        with transaction(self.dsn) as cur:
+            cur.execute(
+                "SELECT * FROM ingestion_jobs WHERE tenant_id = %s AND document_id = %s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (tenant_id, document_id),
             )
             row = cur.fetchone()
         return _row_to_job(row) if row else None
@@ -369,6 +399,12 @@ def _row_to_document(row) -> Document:
         scope=row["scope"] if "scope" in row.keys() else Scope.TENANT.value,
         extracted_metadata=row["extracted_metadata"] if row.get("extracted_metadata") else {},
         created_at=str(row["created_at"]) if row["created_at"] is not None else None,
+        promoted_at=(
+            str(row["promoted_at"])
+            if row.get("promoted_at") is not None
+            else None
+        ),
+        promoted_by_user_id=row.get("promoted_by_user_id"),
     )
 
 

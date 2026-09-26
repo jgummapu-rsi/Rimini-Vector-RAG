@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.ingest_routes import router as ingest_router
+from app.api.model_routes import router as model_router
 from app.api.onboarding_routes import router as onboarding_router
 from app.api.retrieval_routes import router as retrieval_router
 from app.shared.container import Container, build_container
@@ -92,6 +93,7 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
     application.include_router(ingest_router)
     application.include_router(retrieval_router)
     application.include_router(onboarding_router)
+    application.include_router(model_router)
 
     # Trace UI (app/api/static/trace/index.html). Mounted last so it can never
     # shadow an API route. Same-origin with the API, so its fetches need no CORS.

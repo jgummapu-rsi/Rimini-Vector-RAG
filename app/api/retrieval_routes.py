@@ -23,6 +23,7 @@ class QueryRequest(BaseModel):
     """Body for `POST /query`."""
     question: str
     top_k: int = 10
+    document_ids: list[str] | None = None
 
 
 class AskRequest(BaseModel):
@@ -37,7 +38,7 @@ class AskRequest(BaseModel):
     system's own gateway model produced."""
     question: str
     top_k: int = 10
-    model: Optional[str] = None
+    document_ids: list[str] | None = None
 
 
 class AnswerRequest(BaseModel):
@@ -72,7 +73,7 @@ def query(
     t0 = perf_counter()
     result = retrieve_chunks(
         container, principal.tenant_id, req.question, req.top_k,
-        access=access_predicate(principal),
+        access=access_predicate(principal, req.document_ids),
     )
     log.info("query answered", extra={
         "event": "query", "top_k": req.top_k, "hits": len(result.chunk_ids),
@@ -105,8 +106,9 @@ def ask(
     t0 = perf_counter()
     result = answer_query(
         container, principal.tenant_id, req.question, req.top_k,
-        model=req.model, access=access_predicate(principal),
+        access=access_predicate(principal, req.document_ids),
         user_id=principal.user_id,
+        document_ids=req.document_ids,
     )
     log.info("ask answered", extra={
         "event": "ask", "hits": len(result.chunk_ids), "grounded": result.grounded,

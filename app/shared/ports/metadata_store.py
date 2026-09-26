@@ -105,12 +105,22 @@ class MetadataStore(ABC):
         """Delete a document row (chunk/vector/blob cleanup is the caller's job)."""
 
     @abstractmethod
+    def promote_document(
+        self, tenant_id: str, document_id: str, user_id: str
+    ) -> Optional[Document]:
+        """Mark an indexed document as promoted and return it, if it exists."""
+
+    @abstractmethod
     def create_job(self, job: Job) -> None:
         """Persist a new ingestion job row."""
 
     @abstractmethod
     def get_job(self, tenant_id: str, job_id: str) -> Optional[Job]:
         """Fetch a job by id, or None if not found."""
+
+    @abstractmethod
+    def get_latest_job(self, tenant_id: str, document_id: str) -> Optional[Job]:
+        """Fetch the newest ingestion job for a document, or None."""
 
     @abstractmethod
     def set_route_summary(self, job_id: str, summary: dict[str, Any]) -> None:

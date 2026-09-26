@@ -276,6 +276,8 @@ def list_documents(
             "document_id": doc.id, "filename": doc.filename,
             "source_type": doc.source_type, "scope": doc.scope,
             "visibility": doc.visibility, "created_at": doc.created_at,
+            "promoted": doc.promoted_at is not None,
+            "promoted_at": doc.promoted_at,
             "job_id": job.id if job else None,
             "status": job.status if job else None,
             "stage": job.stage if job else None,
@@ -298,8 +300,42 @@ def get_document(
     return {"document_id": doc.id, "source_type": doc.source_type,
             "filename": doc.filename, "visibility": doc.visibility, "scope": doc.scope,
             "extracted_metadata": doc.extracted_metadata,
+            "promoted": doc.promoted_at is not None,
+            "promoted_at": doc.promoted_at,
             "vector_count": container.vectors.count(principal.tenant_id),
             "created_at": doc.created_at}
+
+
+@router.post("/documents/{document_id}/promote")
+def promote_document(
+    document_id: str,
+    principal: Principal = Depends(require_admin),
+    container: Container = Depends(get_container),
+) -> dict:
+    """Promote a successfully indexed document for future interactions."""
+    job = container.metadata.get_latest_job(principal.tenant_id, document_id)
+    if job is None or job.status != JobStatus.DONE.value:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "only successfully indexed documents can be promoted",
+        )
+    document = container.metadata.promote_document(
+        principal.tenant_id, document_id, principal.user_id
+    )
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+    container.metadata.write_audit(
+        principal.tenant_id,
+        principal.user_id,
+        "document_promoted",
+        document_id,
+        {"filename": document.filename},
+    )
+    return {
+        "document_id": document.id,
+        "promoted": True,
+        "promoted_at": document.promoted_at,
+    }
 
 
 @router.post("/documents/{document_id}/reprocess", status_code=status.HTTP_202_ACCEPTED)

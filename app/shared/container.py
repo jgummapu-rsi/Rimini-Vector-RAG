@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.shared.adapters.embedders.gateway import GatewayEmbedder
-from app.shared.adapters.embedders.minilm import MiniLMEmbedder
 from app.ingest.adapters.localfs.blob_store import LocalFsBlobStore
 from app.shared.adapters.localfs.vector_store import LocalFileVectorStore
 from app.shared.adapters.pgvector.vector_store import PgVectorStore
@@ -23,6 +22,7 @@ from app.shared.adapters.sqlite.metadata_store import SqliteMetadataStore
 from app.shared.adapters.sqlite.metrics import SqliteMetrics
 from app.shared.config import Settings, settings
 from app.shared.gateway.client import LiteLLMClient
+from app.shared.model_config import ConfigurableEmbedder, selected_value, selected_vision_model
 from app.shared.rate_limit import RateLimiter
 from app.retrieval.ports.answer_cache import AnswerCache
 from app.ingest.ports.blob_store import BlobStore
@@ -66,6 +66,7 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
         metadata = PostgresMetadataStore(cfg.postgres_dsn)
     else:
         raise ValueError(f"unsupported METADATA_BACKEND={cfg.metadata_backend}")
+    metadata.init_schema()
 
     if cfg.blob_backend == "localfs":
         blob: BlobStore = LocalFsBlobStore(cfg.blob_dir)
@@ -92,6 +93,7 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
             metadata.get_system_config("litellm_base_url") or "",
             metadata.get_system_config("litellm_api_key") or "",
         ),
+        vision_model_provider=lambda: selected_vision_model(metadata, cfg.vision_model),
     )
 
     # embedder selection (float embeddings; binarization deferred).
@@ -100,7 +102,7 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
     # pass (a whole document's chunks arrive in one embed() call).
     if embedder is None:
         if cfg.embedding_provider == "minilm":
-            embedder = MiniLMEmbedder(batch_size=cfg.embed_batch_size)
+            embedder = ConfigurableEmbedder(metadata, "minilm", cfg.embed_batch_size)
         elif cfg.embedding_provider == "gateway":
             embedder = GatewayEmbedder(gateway, cfg.embedding_dim, cfg.embed_batch_size)
         else:
@@ -123,7 +125,6 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
     else:
         raise ValueError(f"unsupported VECTOR_BACKEND={cfg.vector_backend}")
 
-    metadata.init_schema()
     vectors.ensure_collection(embedder.dim)
     # metrics share metadata's database (no separate METRICS_BACKEND knob)
     metrics = (
@@ -133,20 +134,29 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
 
     # reranker selection (no rerank model on the gateway, so "none" is the only
     # other option today -- local cross-encoder or skip reranking entirely)
-    if cfg.reranker_provider == "none":
+    reranker_preset = selected_value(
+        metadata, "reranker_preset", cfg.reranker_provider
+    )
+    if reranker_preset == "none":
         reranker: Optional[Reranker] = None
-    elif cfg.reranker_provider == "cross_encoder":
-        reranker = CrossEncoderReranker(cfg.reranker_model)
+    elif reranker_preset in ("cross_encoder", "ms-marco-minilm"):
+        reranker = CrossEncoderReranker("Xenova/ms-marco-MiniLM-L-6-v2")
     else:
-        raise ValueError(f"unsupported RERANKER_PROVIDER={cfg.reranker_provider}")
+        raise ValueError(f"unsupported RERANKER_PROVIDER={reranker_preset}")
 
     # semantic answer cache (optional). Import + `redis` dependency are lazy: with
     # no REDIS_URL the adapter module is never imported, so redis stays optional.
     cache: Optional[AnswerCache] = None
     if cfg.redis_url:
         from app.retrieval.adapters.cache.redis_stack import RedisStackAnswerCache
+        persisted_embedding = metadata.get_system_config("rag_embedding_preset")
+        cache_index = (
+            f"{cfg.cache_index_name}_{embedder.dim}"
+            if persisted_embedding
+            else cfg.cache_index_name
+        )
         cache = RedisStackAnswerCache(
-            cfg.redis_url, cfg.cache_index_name, embedder.dim,
+            cfg.redis_url, cache_index, embedder.dim,
             cfg.cache_similarity_threshold, cfg.cache_ttl_seconds,
         )
         cache.init_index()

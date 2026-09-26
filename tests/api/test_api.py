@@ -100,6 +100,33 @@ def test_query_response_includes_citations_and_trace(client, container, tenant, 
     assert "chunk_id" in citation and "score" in citation
 
 
+def test_query_can_be_scoped_to_selected_documents(client, container, tenant, files):
+    headers = _auth(tenant["admin_token"])
+    first = client.post(
+        "/ingest", files={"file": ("notes.txt", files["notes.txt"])}, headers=headers
+    ).json()
+    second = client.post(
+        "/ingest", files={"file": ("data.csv", files["data.csv"])}, headers=headers
+    ).json()
+    _drain(container)
+
+    response = client.post(
+        "/query",
+        json={
+            "question": "revenue",
+            "top_k": 10,
+            "document_ids": [second["document_id"]],
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["citations"]
+    assert {item["document_id"] for item in response.json()["citations"]} == {
+        second["document_id"]
+    }
+    assert first["document_id"] != second["document_id"]
+
+
 def test_ask_returns_generated_answer_with_citations_and_trace(
         client, container, tenant, files, monkeypatch):
     monkeypatch.setattr(container.gateway, "chat",
@@ -163,6 +190,26 @@ def test_delete_cascade(client, container, tenant, files):
     assert container.vectors.count(tenant["id"]) == 0
     assert client.get(f"/documents/{doc_id}",
                       headers=_auth(tenant["admin_token"])).status_code == 404
+
+
+def test_admin_can_promote_a_completed_document(client, container, tenant, files):
+    headers = _auth(tenant["admin_token"])
+    created = client.post(
+        "/ingest", files={"file": ("notes.txt", files["notes.txt"])}, headers=headers
+    ).json()
+    before = client.post(
+        f"/documents/{created['document_id']}/promote", headers=headers
+    )
+    assert before.status_code == 409
+
+    _drain(container)
+    promoted = client.post(
+        f"/documents/{created['document_id']}/promote", headers=headers
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["promoted"] is True
+    listed = client.get("/documents", headers=headers).json()["documents"]
+    assert listed[0]["promoted"] is True
 
 
 def test_private_document_hidden_from_other_user(client, tenant, files):

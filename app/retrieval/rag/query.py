@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from app.shared.container import Container
+from app.shared.model_config import selected_chat_model
 from app.retrieval.rag.decompose import decompose_question, looks_multi_part
 
 _SYSTEM = (
@@ -96,7 +97,7 @@ def _retrieve(container: Container, tenant_id: str, question: str, top_k: int,
     precomputed embedding (the answer cache needs it up front) reused here to
     avoid embedding the question twice."""
     if qvec is None:
-        qvec = container.embedder.embed([question])[0]
+        qvec = container.embedder.embed_query([question])[0]
     return container.vectors.search(tenant_id, qvec, top_k=_fetch_k(container, top_k),
                                      access=access, query_text=question)
 
@@ -139,7 +140,14 @@ def _retrieve_decomposed(container: Container, tenant_id: str, sub_questions: li
     return sorted(best.values(), key=lambda h: h.score, reverse=True)
 
 
-def _rerank(container: Container, question: str, hits: list, top_k: int):
+def _rerank(
+    container: Container,
+    question: str,
+    hits: list,
+    top_k: int,
+    *,
+    enforce_min_score: bool = True,
+):
     """Re-score the candidate pool against the ORIGINAL question (not
     sub-questions -- the final answer is generated against the original
     question too) and truncate to top_k. Returns (hits, scores) so callers get
@@ -169,7 +177,7 @@ def _rerank(container: Container, question: str, hits: list, top_k: int):
     scores = container.reranker.score(question, [h.payload.get("content", "") for h in hits])
     order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)[:top_k]
     min_score = container.settings.rerank_min_score
-    if min_score is not None:
+    if min_score is not None and enforce_min_score:
         order = [i for i in order if scores[i] >= min_score]
     return [hits[i] for i in order], [scores[i] for i in order]
 
@@ -187,7 +195,9 @@ def retrieve_chunks(
     is specifically an ANSWER cache (see `generate_answer_from_chunks`) and
     has no meaning for a chunks-only response. This is what `POST /query`
     calls, and what `answer_query` composes with generation below."""
-    resolved_model = model or container.settings.chat_model
+    resolved_model = model or selected_chat_model(
+        container.metadata, container.settings.chat_model
+    )
     trace: list[dict] = []
 
     sub_questions: list[str] = []
@@ -205,7 +215,14 @@ def retrieve_chunks(
     trace.append({"stage": "retrieve", "detail":
                   f"hybrid dense+BM25 retrieval, {len(hits)} candidates"})
 
-    hits, scores = _rerank(container, question, hits, top_k)
+    document_scoped = getattr(access, "document_ids", None) is not None
+    hits, scores = _rerank(
+        container,
+        question,
+        hits,
+        top_k,
+        enforce_min_score=not document_scoped,
+    )
     trace.append({"stage": "rerank", "detail": (
         f"cross-encoder reranked to top {len(hits)}" if container.reranker is not None
         else "no reranker configured, kept fused retrieval order"
@@ -246,6 +263,7 @@ def generate_answer_from_chunks(
     qvec: Optional[list[float]] = None,
     skip_cache_check: bool = False,
     trace: Optional[list[dict]] = None,
+    selected_scope: bool = False,
 ) -> QueryResult:
     """Cache-check -> generate a grounded answer from the GIVEN chunks (with
     an ungrounded/general-knowledge fallback) -> cache-store. Reused by both
@@ -258,14 +276,16 @@ def generate_answer_from_chunks(
     from `retrieve_chunks`) -- this function appends its own `generate` stage
     to it rather than starting fresh, so the final result's trace still
     narrates the whole control flow, not just generation."""
-    resolved_model = model or container.settings.chat_model
+    resolved_model = model or selected_chat_model(
+        container.metadata, container.settings.chat_model
+    )
     trace = list(trace) if trace is not None else []
 
     # --- semantic answer cache (optional) ---
     # Per-user scoping means a hit is grounded in evidence this user already
     # saw, so it's safe to return verbatim.
     if qvec is None:
-        qvec = container.embedder.embed([question])[0]
+        qvec = container.embedder.embed_query([question])[0]
     use_cache = container.cache is not None and user_id is not None
     if use_cache and not skip_cache_check:
         hit = container.cache.get(tenant_id, user_id, qvec, resolved_model)
@@ -277,8 +297,15 @@ def generate_answer_from_chunks(
     context_block = "\n\n---\n\n".join(
         f"[{i + 1}] {c}" for i, c in enumerate(contexts)
     )
+    system_prompt = _SYSTEM
+    if selected_scope:
+        system_prompt += (
+            " The context below was extracted from documents the user explicitly "
+            "selected. If the user refers to 'this image' or 'this document', "
+            "describe or summarize the supplied context directly."
+        )
     messages = [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": system_prompt},
         {"role": "user",
          "content": f"Context:\n{context_block}\n\nQuestion: {question}"},
     ]
@@ -330,19 +357,26 @@ def answer_query(
     model: Optional[str] = None,
     access: Optional[Callable[[dict], bool]] = None,
     user_id: Optional[str] = None,
+    document_ids: Optional[list[str]] = None,
 ) -> QueryResult:
     """Full round trip: retrieve + rerank + generate, in one call. Used by
     internal Python callers (eval scripts, notebooks) that want a generated
     answer directly; `POST /query` uses `retrieve_chunks` alone, and
     `POST /answer` uses `generate_answer_from_chunks` alone, so an external
     caller can do the two steps separately with their own LLM in between."""
-    resolved_model = model or container.settings.chat_model
+    resolved_model = model or selected_chat_model(
+        container.metadata, container.settings.chat_model
+    )
 
     # Embed the ORIGINAL question once, up front: the cache is keyed on it,
     # and retrieval reuses the same vector. A cache hit skips retrieval AND
     # generation entirely, so this check has to happen before either runs.
-    qvec = container.embedder.embed([question])[0]
-    use_cache = container.cache is not None and user_id is not None
+    qvec = container.embedder.embed_query([question])[0]
+    use_cache = (
+        container.cache is not None
+        and user_id is not None
+        and document_ids is None
+    )
     if use_cache:
         hit = container.cache.get(tenant_id, user_id, qvec, resolved_model)
         if hit is not None:
@@ -357,4 +391,5 @@ def answer_query(
         retrieval.chunk_ids, retrieval.scores, retrieval.citations,
         retrieval.sub_questions, model=resolved_model, qvec=qvec,
         skip_cache_check=True, trace=retrieval.trace,
+        selected_scope=document_ids is not None,
     )

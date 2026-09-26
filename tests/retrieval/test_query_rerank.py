@@ -169,6 +169,32 @@ def test_hits_below_min_score_are_dropped_even_when_top_k_not_full(container):
     assert result.scores == [3.4]
 
 
+def test_selected_document_keeps_best_chunks_below_global_relevance_floor(container):
+    """An explicit source selection is itself a relevance signal."""
+    _seed_three_docs(container)
+    container.gateway.chat = lambda messages, model, temperature=0.0: "stub answer"
+    reranked_container = dataclasses.replace(
+        container,
+        reranker=_FakeReranker({
+            "Alpha content about nothing in particular.": -11.4,
+        }),
+    )
+
+    result = answer_query(
+        reranked_container,
+        "T1",
+        "tell me about this selected document",
+        top_k=3,
+        access=access_predicate(
+            _principal("T1", "A", "member"), document_ids=["docA"]
+        ),
+        document_ids=["docA"],
+    )
+
+    assert result.chunk_ids == ["cA001"]
+    assert result.citations[0]["document_id"] == "docA"
+
+
 def test_rerank_min_score_none_disables_the_floor(container):
     """rerank_min_score is a config knob, not a hardcoded behavior -- an admin
     who sets it to None gets the pre-existing always-pad-to-top_k behavior."""

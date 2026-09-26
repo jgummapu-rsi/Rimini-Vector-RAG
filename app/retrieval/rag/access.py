@@ -52,18 +52,28 @@ class AccessFilter:
     """
     user_id: str
     role: str
+    document_ids: frozenset[str] | None = None
 
     def __call__(self, payload: dict) -> bool:
         """Whether `payload` is visible under this bound principal."""
+        if self.document_ids is not None and payload.get("_id") not in self.document_ids:
+            return False
         return can_view(payload, self.user_id, self.role)
 
     @property
     def sees_everything(self) -> bool:
         """True when the rule admits every row in the tenant, so a store can
         skip the filter entirely rather than emit a tautology."""
-        return self.role == Role.ADMIN.value
+        return self.role == Role.ADMIN.value and self.document_ids is None
 
 
-def access_predicate(principal: Principal) -> AccessFilter:
+def access_predicate(
+    principal: Principal, document_ids: list[str] | None = None
+) -> AccessFilter:
     """Build the bound `AccessFilter` for a given principal."""
-    return AccessFilter(user_id=principal.user_id, role=principal.role.value)
+    selected = frozenset(document_ids) if document_ids is not None else None
+    return AccessFilter(
+        user_id=principal.user_id,
+        role=principal.role.value,
+        document_ids=selected,
+    )

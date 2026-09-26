@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS documents (
     acl_user_ids    TEXT NOT NULL DEFAULT '[]',   -- JSON array
     scope           TEXT NOT NULL DEFAULT 'tenant',  -- tenant | global (cross-tenant reach)
     extracted_metadata TEXT NOT NULL DEFAULT '{}',  -- JSON: {author, date, topics[], entities[]}
+    promoted_at     TEXT,
+    promoted_by_user_id TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (tenant_id, content_sha256)            -- dedup key
 );

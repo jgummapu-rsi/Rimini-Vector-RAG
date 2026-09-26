@@ -97,7 +97,7 @@ class Settings(BaseSettings):
 
     litellm_base_url: str = ""
     litellm_api_key: str = ""
-    vision_model: str = "claude-sonnet-5"
+    vision_model: str = "gpt-5.6-sol"
     chat_model: str = "gpt-5-nano"
     embedding_model: str = ""
     embedding_dim: int = 384

@@ -140,6 +140,8 @@ class Document:
     scope: str = Scope.TENANT.value
     extracted_metadata: dict = field(default_factory=dict)
     created_at: Optional[str] = None
+    promoted_at: Optional[str] = None
+    promoted_by_user_id: Optional[str] = None
 
 
 @dataclass

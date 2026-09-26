@@ -115,6 +115,10 @@ class OnnxEmbedder(Embedder):
             out.extend(self._embed_batch(texts[i:i + self._batch]))
         return out
 
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """Embed queries with the configured asymmetric retrieval instruction."""
+        return self.embed(texts, is_query=True)
+
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """One forward pass. The query instruction (if any) is already applied
         by `embed` -- this operates on final text."""

@@ -45,6 +45,7 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 ConfigProvider = Callable[[], tuple[str, str]]
+ModelProvider = Callable[[], str]
 
 
 class LiteLLMClient:
@@ -59,6 +60,7 @@ class LiteLLMClient:
         timeout: float = 120.0,
         max_retries: int = 3,
         config_provider: Optional[ConfigProvider] = None,
+        vision_model_provider: Optional[ModelProvider] = None,
     ):
         """Store connection defaults. `config_provider`, if given, is queried on
         every call for a live DB override (see `_resolve_config`); env-sourced
@@ -68,6 +70,7 @@ class LiteLLMClient:
         self._default_base_url = base_url.rstrip("/")
         self._default_api_key = api_key
         self._config_provider = config_provider
+        self._vision_model_provider = vision_model_provider
         self.vision_model = vision_model
         self.embedding_model = embedding_model
         self.timeout = timeout
@@ -134,18 +137,23 @@ class LiteLLMClient:
 
     def chat(self, messages: list[dict], model: str, temperature: float = 0.0) -> str:
         """Chat completion (used for RAG answer generation)."""
-        data = self._post("/v1/chat/completions", {
-            "model": model, "messages": messages, "temperature": temperature,
-        })
+        payload = {"model": model, "messages": messages}
+        if not model.startswith(("gpt-5.5", "gpt-5.6", "gpt-6")):
+            payload["temperature"] = temperature
+        data = self._post("/v1/chat/completions", payload)
         return data["choices"][0]["message"]["content"] or ""
 
     def vision(self, image_bytes: bytes, prompt: str, mime: str = "image/png") -> str:
         """Transcribe an image via the vision LLM (this is our OCR path — the
         gateway has no dedicated OCR model). Returns the model's text output."""
         b64 = base64.b64encode(image_bytes).decode()
+        model = (
+            self._vision_model_provider()
+            if self._vision_model_provider
+            else self.vision_model
+        )
         payload = {
-            "model": self.vision_model,
-            "temperature": 0,   # deterministic transcription, minimise invention
+            "model": model,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -155,5 +163,7 @@ class LiteLLMClient:
                 ],
             }],
         }
+        if not model.startswith(("gpt-5.5", "gpt-5.6", "gpt-6")):
+            payload["temperature"] = 0
         data = self._post("/v1/chat/completions", payload)
         return data["choices"][0]["message"]["content"] or ""

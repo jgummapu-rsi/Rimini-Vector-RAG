@@ -21,6 +21,7 @@ from app.ingest.pipeline.metadata_extract import extract_metadata
 from app.ingest.pipeline.provenance import location_str
 from app.ingest.pipeline.safety import run_with_timeout
 from app.shared.ports.vector_store import VectorPoint
+from app.shared.model_config import selected_chat_model
 
 log = logging.getLogger("pipeline")
 
@@ -202,7 +203,11 @@ def _stage_metadata(c: Container, job: Job, ctx: dict) -> None:
         return
 
     sample_text = "\n\n".join(ch.text for ch in chunks)   # truncated to budget inside extract_metadata
-    result = extract_metadata(c.gateway, c.settings.chat_model, sample_text)
+    result = extract_metadata(
+        c.gateway,
+        selected_chat_model(c.metadata, c.settings.chat_model),
+        sample_text,
+    )
     c.metadata.set_document_metadata(doc.tenant_id, doc.id, result)
     ctx["extracted_metadata"] = result
 

@@ -50,6 +50,10 @@ class SqliteMetadataStore(MetadataStore):
                 c.execute("ALTER TABLE documents ADD COLUMN scope TEXT NOT NULL DEFAULT 'tenant'")
             if "extracted_metadata" not in doc_cols:
                 c.execute("ALTER TABLE documents ADD COLUMN extracted_metadata TEXT NOT NULL DEFAULT '{}'")
+            if "promoted_at" not in doc_cols:
+                c.execute("ALTER TABLE documents ADD COLUMN promoted_at TEXT")
+            if "promoted_by_user_id" not in doc_cols:
+                c.execute("ALTER TABLE documents ADD COLUMN promoted_by_user_id TEXT")
             vd_cols = {r["name"] for r in c.execute("PRAGMA table_info(vector_documents)")}
             if "scope" not in vd_cols:
                 c.execute("ALTER TABLE vector_documents ADD COLUMN scope TEXT NOT NULL DEFAULT 'tenant'")
@@ -194,6 +198,23 @@ class SqliteMetadataStore(MetadataStore):
                 ),
             )
 
+    def promote_document(
+        self, tenant_id: str, document_id: str, user_id: str
+    ) -> Optional[Document]:
+        """Mark a tenant-owned document as promoted, idempotently."""
+        with transaction(self.db_path) as c:
+            c.execute(
+                "UPDATE documents SET promoted_at = COALESCE(promoted_at, datetime('now')), "
+                "promoted_by_user_id = COALESCE(promoted_by_user_id, ?) "
+                "WHERE tenant_id = ? AND id = ?",
+                (user_id, tenant_id, document_id),
+            )
+            row = c.execute(
+                "SELECT * FROM documents WHERE tenant_id = ? AND id = ?",
+                (tenant_id, document_id),
+            ).fetchone()
+        return _row_to_document(row) if row else None
+
     def get_document(self, tenant_id: str, document_id: str) -> Optional[Document]:
         """A document is fetchable if it belongs to this tenant, OR it is
         scope=global (readable cross-tenant; write/delete stay tenant-owned —
@@ -250,6 +271,16 @@ class SqliteMetadataStore(MetadataStore):
             row = c.execute(
                 "SELECT * FROM ingestion_jobs WHERE tenant_id = ? AND id = ?",
                 (tenant_id, job_id),
+            ).fetchone()
+        return _row_to_job(row) if row else None
+
+    def get_latest_job(self, tenant_id: str, document_id: str) -> Optional[Job]:
+        """Fetch the newest ingestion job for a document."""
+        with transaction(self.db_path) as c:
+            row = c.execute(
+                "SELECT * FROM ingestion_jobs WHERE tenant_id = ? AND document_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (tenant_id, document_id),
             ).fetchone()
         return _row_to_job(row) if row else None
 
@@ -366,6 +397,12 @@ def _row_to_document(row) -> Document:
         scope=row["scope"] if "scope" in row.keys() else Scope.TENANT.value,
         extracted_metadata=json.loads(row["extracted_metadata"]) if "extracted_metadata" in row.keys() and row["extracted_metadata"] else {},
         created_at=row["created_at"],
+        promoted_at=row["promoted_at"] if "promoted_at" in row.keys() else None,
+        promoted_by_user_id=(
+            row["promoted_by_user_id"]
+            if "promoted_by_user_id" in row.keys()
+            else None
+        ),
     )
 
 

@@ -38,14 +38,14 @@ x-app-env: &app-env
   PGVECTOR_HNSW_EF_SEARCH: 100
   PGVECTOR_CANDIDATE_MULTIPLIER: 4
   PGVECTOR_MIN_CANDIDATES: 50
-  PLATFORM_TENANT_ID: ""
+  PLATFORM_TENANT_ID: "${PLATFORM_TENANT_ID:-}"
   # Left blank on purpose: the onboarding UI's gateway-config step (or
   # POST /onboarding/gateway-config) sets these live, persisted to the
   # system_config table -- no restart needed. Set them here instead if you'd
   # rather bake in an org-wide default at deploy time.
   LITELLM_BASE_URL: ""
   LITELLM_API_KEY: ""
-  VISION_MODEL: claude-sonnet-5
+  VISION_MODEL: gpt-5.6-sol
   CHAT_MODEL: gpt-5-nano
   EMBEDDING_PROVIDER: minilm
   EMBEDDING_DIM: "384"

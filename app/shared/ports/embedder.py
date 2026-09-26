@@ -31,6 +31,10 @@ class Embedder(ABC):
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Return one float vector per input text (len == len(texts))."""
 
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """Embed query text, applying model-specific instructions when needed."""
+        return self.embed(texts)
+
     @property
     def max_tokens(self) -> int:
         """This model's hard truncation limit -- inputs longer than this are
