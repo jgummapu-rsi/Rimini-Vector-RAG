@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS documents (
     extracted_metadata TEXT NOT NULL DEFAULT '{}',  -- JSON: {author, date, topics[], entities[]}
     promoted_at     TEXT,
     promoted_by_user_id TEXT,
+    promotion_message TEXT,
+    promotion_version INTEGER NOT NULL DEFAULT 0,
+    promotion_config TEXT NOT NULL DEFAULT '{}',
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (tenant_id, content_sha256)            -- dedup key
 );

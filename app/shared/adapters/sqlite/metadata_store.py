@@ -54,6 +54,12 @@ class SqliteMetadataStore(MetadataStore):
                 c.execute("ALTER TABLE documents ADD COLUMN promoted_at TEXT")
             if "promoted_by_user_id" not in doc_cols:
                 c.execute("ALTER TABLE documents ADD COLUMN promoted_by_user_id TEXT")
+            if "promotion_message" not in doc_cols:
+                c.execute("ALTER TABLE documents ADD COLUMN promotion_message TEXT")
+            if "promotion_version" not in doc_cols:
+                c.execute("ALTER TABLE documents ADD COLUMN promotion_version INTEGER NOT NULL DEFAULT 0")
+            if "promotion_config" not in doc_cols:
+                c.execute("ALTER TABLE documents ADD COLUMN promotion_config TEXT NOT NULL DEFAULT '{}'")
             vd_cols = {r["name"] for r in c.execute("PRAGMA table_info(vector_documents)")}
             if "scope" not in vd_cols:
                 c.execute("ALTER TABLE vector_documents ADD COLUMN scope TEXT NOT NULL DEFAULT 'tenant'")
@@ -199,15 +205,33 @@ class SqliteMetadataStore(MetadataStore):
             )
 
     def promote_document(
-        self, tenant_id: str, document_id: str, user_id: str
+        self, tenant_id: str, document_id: str, user_id: str,
+        message: str | None = None, config: dict | None = None,
     ) -> Optional[Document]:
         """Mark a tenant-owned document as promoted, idempotently."""
         with transaction(self.db_path) as c:
             c.execute(
-                "UPDATE documents SET promoted_at = COALESCE(promoted_at, datetime('now')), "
-                "promoted_by_user_id = COALESCE(promoted_by_user_id, ?) "
+                "UPDATE documents SET promoted_at = datetime('now'), "
+                "promoted_by_user_id = ?, promotion_message = COALESCE(?, promotion_message), "
+                "promotion_version = COALESCE(promotion_version, 0) + 1, "
+                "promotion_config = COALESCE(?, promotion_config) "
                 "WHERE tenant_id = ? AND id = ?",
-                (user_id, tenant_id, document_id),
+                (user_id, message, json.dumps(config) if config is not None else None, tenant_id, document_id),
+            )
+            row = c.execute(
+                "SELECT * FROM documents WHERE tenant_id = ? AND id = ?",
+                (tenant_id, document_id),
+            ).fetchone()
+        return _row_to_document(row) if row else None
+
+    def unpromote_document(
+        self, tenant_id: str, document_id: str
+    ) -> Optional[Document]:
+        with transaction(self.db_path) as c:
+            c.execute(
+                "UPDATE documents SET promoted_at = NULL, promoted_by_user_id = NULL "
+                "WHERE tenant_id = ? AND id = ?",
+                (tenant_id, document_id),
             )
             row = c.execute(
                 "SELECT * FROM documents WHERE tenant_id = ? AND id = ?",
@@ -402,6 +426,17 @@ def _row_to_document(row) -> Document:
             row["promoted_by_user_id"]
             if "promoted_by_user_id" in row.keys()
             else None
+        ),
+        promotion_message=(
+            row["promotion_message"] if "promotion_message" in row.keys() else None
+        ),
+        promotion_version=(
+            row["promotion_version"] if "promotion_version" in row.keys() else 0
+        ),
+        promotion_config=(
+            json.loads(row["promotion_config"] or "{}")
+            if "promotion_config" in row.keys()
+            else {}
         ),
     )
 

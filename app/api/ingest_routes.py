@@ -7,6 +7,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
 
 from app.api._common import _owned_or_404, _read_capped, _visible_or_404
 from app.api.auth import (
@@ -35,6 +36,11 @@ from app.retrieval.rag.access import can_view
 
 router = APIRouter()
 log = logging.getLogger("api")
+
+
+class PromoteDocumentRequest(BaseModel):
+    message: str | None = None
+    retrieval_config: dict | None = None
 
 
 @router.get("/healthz")
@@ -278,6 +284,9 @@ def list_documents(
             "visibility": doc.visibility, "created_at": doc.created_at,
             "promoted": doc.promoted_at is not None,
             "promoted_at": doc.promoted_at,
+            "promotion_message": doc.promotion_message,
+            "promotion_version": doc.promotion_version,
+            "promotion_config": doc.promotion_config,
             "job_id": job.id if job else None,
             "status": job.status if job else None,
             "stage": job.stage if job else None,
@@ -302,6 +311,9 @@ def get_document(
             "extracted_metadata": doc.extracted_metadata,
             "promoted": doc.promoted_at is not None,
             "promoted_at": doc.promoted_at,
+            "promotion_message": doc.promotion_message,
+            "promotion_version": doc.promotion_version,
+            "promotion_config": doc.promotion_config,
             "vector_count": container.vectors.count(principal.tenant_id),
             "created_at": doc.created_at}
 
@@ -309,6 +321,7 @@ def get_document(
 @router.post("/documents/{document_id}/promote")
 def promote_document(
     document_id: str,
+    req: PromoteDocumentRequest | None = None,
     principal: Principal = Depends(require_admin),
     container: Container = Depends(get_container),
 ) -> dict:
@@ -320,21 +333,55 @@ def promote_document(
             "only successfully indexed documents can be promoted",
         )
     document = container.metadata.promote_document(
-        principal.tenant_id, document_id, principal.user_id
+        principal.tenant_id,
+        document_id,
+        principal.user_id,
+        req.message.strip() if req and req.message and req.message.strip() else None,
+        req.retrieval_config if req else None,
     )
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+    invalidate_cache_for(container, principal.tenant_id, document.scope)
     container.metadata.write_audit(
         principal.tenant_id,
         principal.user_id,
         "document_promoted",
         document_id,
-        {"filename": document.filename},
+        {"filename": document.filename, "message": document.promotion_message},
     )
     return {
         "document_id": document.id,
         "promoted": True,
         "promoted_at": document.promoted_at,
+        "promotion_message": document.promotion_message,
+        "promotion_version": document.promotion_version,
+        "promotion_config": document.promotion_config,
+    }
+
+
+@router.post("/documents/{document_id}/unpromote")
+def unpromote_document(
+    document_id: str,
+    principal: Principal = Depends(require_admin),
+    container: Container = Depends(get_container),
+) -> dict:
+    document = container.metadata.unpromote_document(
+        principal.tenant_id, document_id
+    )
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+    invalidate_cache_for(container, principal.tenant_id, document.scope)
+    container.metadata.write_audit(
+        principal.tenant_id,
+        principal.user_id,
+        "document_unpromoted",
+        document_id,
+        {"filename": document.filename, "version": document.promotion_version},
+    )
+    return {
+        "document_id": document.id,
+        "promoted": False,
+        "promotion_version": document.promotion_version,
     }
 
 

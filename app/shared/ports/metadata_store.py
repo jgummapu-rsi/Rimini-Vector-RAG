@@ -106,9 +106,16 @@ class MetadataStore(ABC):
 
     @abstractmethod
     def promote_document(
-        self, tenant_id: str, document_id: str, user_id: str
+        self, tenant_id: str, document_id: str, user_id: str,
+        message: str | None = None, config: dict | None = None,
     ) -> Optional[Document]:
         """Mark an indexed document as promoted and return it, if it exists."""
+
+    @abstractmethod
+    def unpromote_document(
+        self, tenant_id: str, document_id: str
+    ) -> Optional[Document]:
+        """Remove a document from active promoted knowledge without deleting it."""
 
     @abstractmethod
     def create_job(self, job: Job) -> None:

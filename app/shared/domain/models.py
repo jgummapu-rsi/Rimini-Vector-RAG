@@ -142,6 +142,9 @@ class Document:
     created_at: Optional[str] = None
     promoted_at: Optional[str] = None
     promoted_by_user_id: Optional[str] = None
+    promotion_message: Optional[str] = None
+    promotion_version: int = 0
+    promotion_config: dict = field(default_factory=dict)
 
 
 @dataclass

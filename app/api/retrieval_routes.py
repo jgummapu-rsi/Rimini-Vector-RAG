@@ -24,6 +24,8 @@ class QueryRequest(BaseModel):
     question: str
     top_k: int = 10
     document_ids: list[str] | None = None
+    enforce_min_score: bool | None = None
+    rerank_min_score: float | None = None
 
 
 class AskRequest(BaseModel):
@@ -39,6 +41,9 @@ class AskRequest(BaseModel):
     question: str
     top_k: int = 10
     document_ids: list[str] | None = None
+    enforce_min_score: bool | None = None
+    rerank_min_score: float | None = None
+    use_cache: bool | None = None
 
 
 class AnswerRequest(BaseModel):
@@ -74,6 +79,8 @@ def query(
     result = retrieve_chunks(
         container, principal.tenant_id, req.question, req.top_k,
         access=access_predicate(principal, req.document_ids),
+        enforce_min_score=req.enforce_min_score,
+        rerank_min_score=req.rerank_min_score,
     )
     log.info("query answered", extra={
         "event": "query", "top_k": req.top_k, "hits": len(result.chunk_ids),
@@ -109,6 +116,9 @@ def ask(
         access=access_predicate(principal, req.document_ids),
         user_id=principal.user_id,
         document_ids=req.document_ids,
+        enforce_min_score=req.enforce_min_score,
+        rerank_min_score=req.rerank_min_score,
+        use_cache_override=req.use_cache,
     )
     log.info("ask answered", extra={
         "event": "ask", "hits": len(result.chunk_ids), "grounded": result.grounded,

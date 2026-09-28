@@ -64,6 +64,9 @@ class PostgresMetadataStore(MetadataStore):
                                WHERE table_name = 'documents') THEN
                         ALTER TABLE documents ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ;
                         ALTER TABLE documents ADD COLUMN IF NOT EXISTS promoted_by_user_id TEXT;
+                        ALTER TABLE documents ADD COLUMN IF NOT EXISTS promotion_message TEXT;
+                        ALTER TABLE documents ADD COLUMN IF NOT EXISTS promotion_version INTEGER NOT NULL DEFAULT 0;
+                        ALTER TABLE documents ADD COLUMN IF NOT EXISTS promotion_config JSONB NOT NULL DEFAULT '{}';
                     END IF;
                 END $$;
             """)
@@ -194,15 +197,30 @@ class PostgresMetadataStore(MetadataStore):
             )
 
     def promote_document(
-        self, tenant_id: str, document_id: str, user_id: str
+        self, tenant_id: str, document_id: str, user_id: str,
+        message: str | None = None, config: dict | None = None,
     ) -> Optional[Document]:
         """Mark a tenant-owned document as promoted, idempotently."""
         with transaction(self.dsn) as cur:
             cur.execute(
-                "UPDATE documents SET promoted_at = COALESCE(promoted_at, now()), "
-                "promoted_by_user_id = COALESCE(promoted_by_user_id, %s) "
+                "UPDATE documents SET promoted_at = now(), "
+                "promoted_by_user_id = %s, promotion_message = COALESCE(%s, promotion_message), "
+                "promotion_version = COALESCE(promotion_version, 0) + 1, "
+                "promotion_config = COALESCE(%s, promotion_config) "
                 "WHERE tenant_id = %s AND id = %s RETURNING *",
-                (user_id, tenant_id, document_id),
+                (user_id, message, Json(config) if config is not None else None, tenant_id, document_id),
+            )
+            row = cur.fetchone()
+        return _row_to_document(row) if row else None
+
+    def unpromote_document(
+        self, tenant_id: str, document_id: str
+    ) -> Optional[Document]:
+        with transaction(self.dsn) as cur:
+            cur.execute(
+                "UPDATE documents SET promoted_at = NULL, promoted_by_user_id = NULL "
+                "WHERE tenant_id = %s AND id = %s RETURNING *",
+                (tenant_id, document_id),
             )
             row = cur.fetchone()
         return _row_to_document(row) if row else None
@@ -405,6 +423,9 @@ def _row_to_document(row) -> Document:
             else None
         ),
         promoted_by_user_id=row.get("promoted_by_user_id"),
+        promotion_message=row.get("promotion_message"),
+        promotion_version=row.get("promotion_version") or 0,
+        promotion_config=row.get("promotion_config") or {},
     )
 
 

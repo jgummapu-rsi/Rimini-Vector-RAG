@@ -147,6 +147,7 @@ def _rerank(
     top_k: int,
     *,
     enforce_min_score: bool = True,
+    min_score_override: Optional[float] = None,
 ):
     """Re-score the candidate pool against the ORIGINAL question (not
     sub-questions -- the final answer is generated against the original
@@ -176,7 +177,11 @@ def _rerank(
         return hits[:top_k], [h.score for h in hits[:top_k]]
     scores = container.reranker.score(question, [h.payload.get("content", "") for h in hits])
     order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)[:top_k]
-    min_score = container.settings.rerank_min_score
+    min_score = (
+        container.settings.rerank_min_score
+        if min_score_override is None
+        else min_score_override
+    )
     if min_score is not None and enforce_min_score:
         order = [i for i in order if scores[i] >= min_score]
     return [hits[i] for i in order], [scores[i] for i in order]
@@ -189,6 +194,8 @@ def retrieve_chunks(
     top_k: int = 10,
     model: Optional[str] = None,
     access: Optional[Callable[[dict], bool]] = None,
+    enforce_min_score: Optional[bool] = None,
+    rerank_min_score: Optional[float] = None,
 ) -> RetrievalResult:
     """Decompose (if multi-part) -> hybrid retrieve -> rerank. No generation,
     no cache -- retrieval is cheap and already ACL-scoped; the semantic cache
@@ -216,12 +223,14 @@ def retrieve_chunks(
                   f"hybrid dense+BM25 retrieval, {len(hits)} candidates"})
 
     document_scoped = getattr(access, "document_ids", None) is not None
+    apply_score_floor = not document_scoped if enforce_min_score is None else enforce_min_score
     hits, scores = _rerank(
         container,
         question,
         hits,
         top_k,
-        enforce_min_score=not document_scoped,
+        enforce_min_score=apply_score_floor,
+        min_score_override=rerank_min_score,
     )
     trace.append({"stage": "rerank", "detail": (
         f"cross-encoder reranked to top {len(hits)}" if container.reranker is not None
@@ -358,6 +367,9 @@ def answer_query(
     access: Optional[Callable[[dict], bool]] = None,
     user_id: Optional[str] = None,
     document_ids: Optional[list[str]] = None,
+    enforce_min_score: Optional[bool] = None,
+    rerank_min_score: Optional[float] = None,
+    use_cache_override: Optional[bool] = None,
 ) -> QueryResult:
     """Full round trip: retrieve + rerank + generate, in one call. Used by
     internal Python callers (eval scripts, notebooks) that want a generated
@@ -372,10 +384,11 @@ def answer_query(
     # and retrieval reuses the same vector. A cache hit skips retrieval AND
     # generation entirely, so this check has to happen before either runs.
     qvec = container.embedder.embed_query([question])[0]
+    default_cache_allowed = document_ids is None
     use_cache = (
         container.cache is not None
         and user_id is not None
-        and document_ids is None
+        and (default_cache_allowed if use_cache_override is None else use_cache_override)
     )
     if use_cache:
         hit = container.cache.get(tenant_id, user_id, qvec, resolved_model)
@@ -384,8 +397,16 @@ def answer_query(
             return _result_from_cache(hit.payload, hit.similarity)
         container.metrics.incr("query.cache_miss")
 
-    retrieval = retrieve_chunks(container, tenant_id, question, top_k,
-                                model=resolved_model, access=access)
+    retrieval = retrieve_chunks(
+        container,
+        tenant_id,
+        question,
+        top_k,
+        model=resolved_model,
+        access=access,
+        enforce_min_score=enforce_min_score,
+        rerank_min_score=rerank_min_score,
+    )
     return generate_answer_from_chunks(
         container, tenant_id, user_id, question, retrieval.contexts,
         retrieval.chunk_ids, retrieval.scores, retrieval.citations,

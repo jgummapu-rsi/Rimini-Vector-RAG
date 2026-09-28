@@ -68,6 +68,23 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
         raise ValueError(f"unsupported METADATA_BACKEND={cfg.metadata_backend}")
     metadata.init_schema()
 
+    # Retrieval tuning can be changed live from the Knowledge admin UI. The
+    # persisted values win over environment defaults after every restart.
+    persisted_retrieval = {
+        "rerank_min_score": float,
+        "rerank_candidate_multiplier": int,
+        "rerank_min_candidates": int,
+        "cache_similarity_threshold": float,
+        "cache_ttl_seconds": int,
+    }
+    for name, cast in persisted_retrieval.items():
+        stored = metadata.get_system_config(f"rag_{name}")
+        if stored is not None:
+            setattr(cfg, name, cast(stored))
+    cache_enabled = (
+        metadata.get_system_config("rag_cache_enabled") or "true"
+    ).lower() == "true"
+
     if cfg.blob_backend == "localfs":
         blob: BlobStore = LocalFsBlobStore(cfg.blob_dir)
     else:
@@ -147,7 +164,7 @@ def build_container(cfg: Settings = settings, embedder: Optional[Embedder] = Non
     # semantic answer cache (optional). Import + `redis` dependency are lazy: with
     # no REDIS_URL the adapter module is never imported, so redis stays optional.
     cache: Optional[AnswerCache] = None
-    if cfg.redis_url:
+    if cfg.redis_url and cache_enabled:
         from app.retrieval.adapters.cache.redis_stack import RedisStackAnswerCache
         persisted_embedding = metadata.get_system_config("rag_embedding_preset")
         cache_index = (
