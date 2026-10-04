@@ -16,7 +16,7 @@
   genuinely needs, to call the API from outside this UI).
 
   ============================================================================
-  THEME — Rimini Street Brand Style Guide (docs/style_guide.md).
+  THEME — Rimini Street Brand Style Guide.
   ============================================================================
   Token set, type scale, logo rules, motion rules and voice rules are identical
   to app/api/static/trace/index.html; the long-form rationale lives in that
@@ -322,39 +322,40 @@ code.inline {
   }
 }
 </style>
+<link rel="stylesheet" href="/welcome.css">
+<link rel="stylesheet" href="/ui/glass.css">
 </head>
 <body>
+<a class="skip" href="#welcome">Skip to main content</a>
 
 <header class="site">
   <!-- §4: never place "Rimini Street" as text beside the logo; the logo says it.
        Logo + divider + product name only. -->
   <span class="logo" role="img" aria-label="Rimini Street"></span>
   <span class="hdivider" aria-hidden="true"></span>
-  <span class="product">Agentic AI Knowledge Base</span>
+  <span class="product">Agentic AI™<small>Knowledge workspace</small></span>
+  <span class="header-label">From knowledge to confidence</span>
 </header>
 
-<main class="shell">
+<main class="shell" id="welcome">
   <div class="intro">
-    <p class="eyebrow">Agentic AI</p>
-    <h1>Turn your documents into answers.</h1>
-    <p class="lede">Drop in a contract, a spreadsheet or a scanned report. It is parsed,
-       chunked, embedded and indexed — then any question you ask is answered from your
-       own content, with the exact passages it came from.</p>
+    <p class="eyebrow">Your knowledge. Connected.</p>
+    <h1>Clarity starts with <span>your knowledge.</span></h1>
+    <p class="lede">Bring your documents, questions, and team together. Turn the information
+       you trust into answers you can act on — with the evidence always in reach.</p>
     <ul class="points">
-      <li><b>Structure first, AI only when structure runs out</b>
-          <span>Real text and tables are read with plain parsers, free. The vision model is
-                called only for genuinely unreadable pages.</span></li>
-      <li><b>Scoped to you</b>
-          <span>Your account maps to a private tenant. Access rules are enforced before
-                ranking, not after.</span></li>
-      <li><b>Every answer is traceable</b>
-          <span>See which passages an answer was grounded in, and the ingestion trace of
-                the document each one came from.</span></li>
+      <li><b>One place for your team's knowledge</b>
+          <span>Contracts, reports, spreadsheets, and scanned pages, connected in a shared workspace.</span></li>
+      <li><b>Answers with evidence</b>
+          <span>Follow citations to the exact passages in your original documents.</span></li>
+      <li><b>The right access for every role</b>
+          <span>Organization-scoped access with administrator, contributor, and reader roles.</span></li>
     </ul>
   </div>
 
   <div class="card" id="card"></div>
 </main>
+<footer class="portal-footer"><span>Rimini Agentic AI™</span><span>Knowledge connected. Evidence included.</span></footer>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -396,31 +397,25 @@ function render(html) {
 function screenWelcome() {
   document.title = "Agentic AI Knowledge Base";
   render(`
-    <p class="eyebrow">Get started</p>
-    <h2>How will you use this?</h2>
-    <p class="sub">Pick the path that fits. You can switch later by signing in again.</p>
+    <p class="eyebrow">Welcome to your workspace</p>
+    <h2>Make knowledge work.</h2>
+    <p class="sub">Choose your experience to get started.</p>
     <div class="choice">
+      <button class="choicebtn recommended" id="pickReader" type="button">
+        ${ICONS.reader}
+        <span><b>Open the workspace</b><small>Explore documents, ask questions, and collaborate with your team.</small></span>
+        <span class="choice-arrow" aria-hidden="true">→</span>
+      </button>
       <button class="choicebtn" id="pickDev" type="button">
         ${ICONS.developer}
         <span>
-          <b>Developer</b>
-          <small>Get the API endpoints, your bearer token, and example request payloads.</small>
-        </span>
-      </button>
-      <button class="choicebtn" id="pickReader" type="button">
-        ${ICONS.reader}
-        <span>
-          <b>Business reader</b>
-          <small>Go straight to the portal — drop documents in, watch them index, and ask
-                 questions about them.</small>
+          <b>Build with the API</b>
+          <small>Connect your applications with API access and integration examples.</small>
         </span>
       </button>
     </div>
     <div class="note">
-      <b>Before you start:</b> this stack runs <code class="inline">Postgres</code> (with the
-      <code class="inline">pgvector</code> extension) and <code class="inline">Redis</code>
-      (redis-stack) alongside the API. Both must be healthy for ingestion and query to work —
-      run <code class="inline">docker compose ps</code> if something looks stuck.
+      <b>Joining your team?</b> Sign in with the account your workspace administrator created for you.
     </div>
   `);
   $("pickDev").onclick = () => { role = "developer"; screenAuth(); };
@@ -429,21 +424,18 @@ function screenWelcome() {
 
 // ---------------------------------------------------------------- screen: auth
 function screenAuth() {
-  let mode = "register";
+  let mode = "login";
 
   function draw() {
     render(`
       <p class="eyebrow">${role === "developer" ? "Developer access" : "Portal access"}</p>
-      <h2>${mode === "register" ? "Create your account" : "Welcome back"}</h2>
-      <p class="sub">Your account maps to a private tenant — your documents are visible to
-         nobody else.</p>
-      <div class="tabs" role="tablist">
-        <button id="tabRegister" type="button" role="tab"
-                aria-selected="${mode === "register"}"
-                class="${mode === "register" ? "active" : ""}">Create account</button>
-        <button id="tabLogin" type="button" role="tab"
-                aria-selected="${mode === "login"}"
-                class="${mode === "login" ? "active" : ""}">Log in</button>
+      <h2>${mode === "register" ? "Create your workspace" : "Welcome back."}</h2>
+      <p class="sub">${mode === "register" ? "Start a workspace for your organization. You can add your team once you are inside." : "Sign in to continue to your organization's knowledge workspace."}</p>
+      <div class="tabs" aria-label="Account access">
+        <button id="tabLogin" type="button" aria-pressed="${mode === "login"}"
+                class="${mode === "login" ? "active" : ""}">Sign in</button>
+        <button id="tabRegister" type="button" aria-pressed="${mode === "register"}"
+                class="${mode === "register" ? "active" : ""}">Create workspace</button>
       </div>
       ${mode === "register" ? `
         <label class="lbl" for="dname">Organization name (optional)</label>
@@ -457,7 +449,7 @@ function screenAuth() {
       <div class="row">
         <button class="btn" id="back" type="button">Back</button>
         <button class="btn btn-primary" id="submit" type="button">${
-          mode === "register" ? "Create account" : "Log in"}</button>
+           mode === "register" ? "Create workspace" : "Sign in"}</button>
       </div>
       <p class="err" id="err" role="alert"></p>
     `);
@@ -518,6 +510,19 @@ function screenAuth() {
 async function screenGatewayGateOrProceed() {
   const status = await api("/onboarding/status");
   if (status.litellm_configured) return proceed();
+  const capabilities = await api("/onboarding/capabilities", {
+    headers: { Authorization: `Bearer ${apiToken}` },
+  });
+  if (!capabilities.configure_gateway) {
+    render(`
+      <p class="eyebrow">Gateway setup pending</p>
+      <h2>Your account is ready</h2>
+      <p class="sub">A platform operator must configure the LLM gateway before answers and scanned-document extraction are available.</p>
+      <button class="btn btn-primary" id="continue" type="button">Continue</button>
+    `);
+    $("continue").onclick = proceed;
+    return;
+  }
   screenGateway();
 }
 
@@ -577,7 +582,7 @@ function screenDeveloper() {
   render(`
     <p class="eyebrow">Developer access</p>
     <h2>You are set up</h2>
-    <p class="sub">This bearer token authenticates as an admin of your tenant. Keep it
+    <p class="sub">This bearer token carries your account's workspace permissions. Keep it
        secret; logging in again issues a new one and invalidates this one.</p>
 
     <div class="tokenfield">

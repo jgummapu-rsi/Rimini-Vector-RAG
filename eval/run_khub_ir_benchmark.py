@@ -13,9 +13,8 @@ direct, apples-to-apples extension of that harness to include khub.
 
 Our-side ingestion chunks with the real chunker and embeds with the real MiniLM
 embedder, then upserts straight into the real vector store (bypassing the
-Document/Job/queue/metadata-LLM-extraction machinery -- CLAUDE.md's own gap list notes
-extracted metadata has zero effect on ranking, so skipping it doesn't change retrieval
-quality, only avoids ~5,183 pointless LLM calls). Retrieval on our side still goes
+Document/Job/queue/metadata-LLM-extraction machinery). This measures retrieval over
+source text without optional metadata enrichment or its gateway calls. Retrieval still goes
 through the real hybrid dense+BM25+RRF fusion and cross-encoder rerank.
 
 khub upload/query/delete run under bounded concurrency (a live external service; 5,183
@@ -26,28 +25,29 @@ Run:  python -m eval.run_khub_ir_benchmark [max_docs]
 Env (from .env, not app.config.Settings -- khub is comparison-only, never wired into
 the app): KHUB_BASE_URL, KHUB_BASIC_USER, KHUB_BASIC_PASSWORD
 """
+
 from __future__ import annotations
 
 import json
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
-import numpy as np
+import ir_datasets
+import pandas as pd
 from dotenv import dotenv_values
 
-import ir_datasets
-from app.shared.container import build_container
-from app.shared.domain.models import Modality
 from app.ingest.pipeline.chunker import chunk_elements
 from app.ingest.pipeline.elements import Element
-from app.shared.ports.vector_store import VectorPoint
 from app.retrieval.rag.query import _rerank, _retrieve
-
+from app.shared.container import build_container
+from app.shared.domain.models import Modality
+from app.shared.ports.vector_store import VectorPoint
 from eval.run_retrieval import K_VALUES, _ndcg_at_k, _precision_at_k, _recall_at_k, _rr_at_10
+from eval.storage import isolated_evaluation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,7 +70,7 @@ def progress(event: str, **fields) -> None:
 def _embed_batched(embedder, texts, batch=128):
     out = []
     for i in range(0, len(texts), batch):
-        out.extend(embedder.embed(texts[i:i + batch]))
+        out.extend(embedder.embed(texts[i : i + batch]))
         if (i // batch) % 10 == 0:
             print(f"  embedded {min(i + batch, len(texts))}/{len(texts)}", end="\r")
     print()
@@ -87,13 +87,22 @@ def _ingest_ours(container, corpus: list[tuple[str, str]]) -> None:
         vecs = container.embedder.embed([ch.text for ch in chunks])
         points = [
             VectorPoint(
-                chunk_id=f"{doc_id}-{i:03d}", tenant_id=TENANT_ID, vector=vec,
-                payload={"_id": doc_id, "content": ch.text, "modality": "text",
-                         "user_id": "benchmark", "visibility": "tenant",
-                         "acl_user_ids": [], "scope": "tenant",
-                         "source_type": "text", "filename": doc_id},
+                chunk_id=f"{doc_id}-{i:03d}",
+                tenant_id=TENANT_ID,
+                vector=vec,
+                payload={
+                    "_id": doc_id,
+                    "content": ch.text,
+                    "modality": "text",
+                    "user_id": "benchmark",
+                    "visibility": "tenant",
+                    "acl_user_ids": [],
+                    "scope": "tenant",
+                    "source_type": "text",
+                    "filename": doc_id,
+                },
             )
-            for i, (ch, vec) in enumerate(zip(chunks, vecs))
+            for i, (ch, vec) in enumerate(zip(chunks, vecs, strict=False))
         ]
         container.vectors.upsert(points)
     progress("ingest_ours_done", docs=len(corpus), vectors=container.vectors.count(TENANT_ID))
@@ -109,12 +118,15 @@ def _ours_ranked(container, question: str) -> list[str]:
         if doc_id and doc_id not in seen:
             seen.add(doc_id)
             ranked.append(doc_id)
-    progress("query_ours", question=question[:60], latency_ms=round((time.time() - t0) * 1000),
-              hits=len(hits), ok=True)
+    progress(
+        "query_ours",
+        question=question[:60],
+        latency_ms=round((time.time() - t0) * 1000),
+        hits=len(hits),
+        ok=True,
+    )
     return ranked
 
-
-# --- khub side: retrieval-only /search, bounded concurrency, never /ask -----------
 
 def _khub_upload_one(khub: httpx.Client, doc_id: str, text: str) -> tuple[str, str] | None:
     t0 = time.time()
@@ -127,8 +139,13 @@ def _khub_upload_one(khub: httpx.Client, doc_id: str, text: str) -> tuple[str, s
         resp.raise_for_status()
         body = resp.json() if resp.content else {}
         family = body.get("doc_family") or body.get("family") or doc_id
-        progress("upload_khub", doc_id=doc_id, family=family,
-                  latency_ms=round((time.time() - t0) * 1000), ok=True)
+        progress(
+            "upload_khub",
+            doc_id=doc_id,
+            family=family,
+            latency_ms=round((time.time() - t0) * 1000),
+            ok=True,
+        )
         return family, doc_id
     except httpx.HTTPError as exc:
         progress("upload_khub", doc_id=doc_id, ok=False, error=str(exc))
@@ -152,10 +169,14 @@ def _khub_search(khub: httpx.Client, question: str, family_to_doc: dict[str, str
     last_exc = None
     for attempt in range(1, KHUB_MAX_ATTEMPTS + 1):
         try:
-            r = khub.post("/api/v1/search", json={
-                "query": question, "top_k": TOP_K_FETCH,
-                "filters": {"doc_type": DOC_TYPE_TAG},
-            })
+            r = khub.post(
+                "/api/v1/search",
+                json={
+                    "query": question,
+                    "top_k": TOP_K_FETCH,
+                    "filters": {"doc_type": DOC_TYPE_TAG},
+                },
+            )
             r.raise_for_status()
             passages = r.json().get("passages", [])
             ranked, seen = [], set()
@@ -164,8 +185,13 @@ def _khub_search(khub: httpx.Client, question: str, family_to_doc: dict[str, str
                 if doc_id and doc_id not in seen:
                     seen.add(doc_id)
                     ranked.append(doc_id)
-            progress("query_khub", question=question[:60],
-                      latency_ms=round((time.time() - t0) * 1000), hits=len(passages), ok=True)
+            progress(
+                "query_khub",
+                question=question[:60],
+                latency_ms=round((time.time() - t0) * 1000),
+                hits=len(passages),
+                ok=True,
+            )
             return ranked
         except httpx.HTTPStatusError as exc:
             last_exc = exc
@@ -177,8 +203,13 @@ def _khub_search(khub: httpx.Client, question: str, family_to_doc: dict[str, str
             if attempt == KHUB_MAX_ATTEMPTS:
                 break
             time.sleep(5 * attempt)
-    progress("query_khub", question=question[:60], latency_ms=round((time.time() - t0) * 1000),
-              ok=False, error=str(last_exc))
+    progress(
+        "query_khub",
+        question=question[:60],
+        latency_ms=round((time.time() - t0) * 1000),
+        ok=False,
+        error=str(last_exc),
+    )
     return []
 
 
@@ -199,8 +230,10 @@ def _khub_cleanup(khub: httpx.Client, family_to_doc: dict[str, str], baseline_co
     restored = after_count == baseline_count
     progress("cleanup_verify", baseline=baseline_count, after=after_count, restored=restored)
     if not restored:
-        print(f"\n!!! WARNING: khub document count not restored -- before={baseline_count} "
-              f"after={after_count}. Investigate manually before trusting khub is clean. !!!\n")
+        print(
+            f"\n!!! WARNING: khub document count not restored -- before={baseline_count} "
+            f"after={after_count}. Investigate manually before trusting khub is clean. !!!\n"
+        )
 
 
 def _score(ranked: list[str], rel: set[str]) -> dict[str, float]:
@@ -213,7 +246,8 @@ def _score(ranked: list[str], rel: set[str]) -> dict[str, float]:
     return row
 
 
-def main() -> None:
+@isolated_evaluation
+def main(settings) -> None:
     max_docs = int(sys.argv[1]) if len(sys.argv) > 1 else None
 
     PROGRESS_LOG.write_text("", encoding="utf-8")
@@ -243,12 +277,14 @@ def main() -> None:
     print(f"corpus: {len(corpus)} docs | queries: {len(query_ids)}\n")
     progress("corpus_loaded", docs=len(corpus), queries=len(query_ids))
 
-    container = build_container()
+    container = build_container(settings)
     print("chunking + embedding + upserting corpus into our vector store (real pipeline)...")
     t0 = time.time()
     _ingest_ours(container, corpus)
-    print(f"  ingested {len(corpus)} docs in {time.time() - t0:.0f}s "
-          f"-> {container.vectors.count(TENANT_ID)} vectors\n")
+    print(
+        f"  ingested {len(corpus)} docs in {time.time() - t0:.0f}s "
+        f"-> {container.vectors.count(TENANT_ID)} vectors\n"
+    )
 
     khub = httpx.Client(base_url=khub_base_url, auth=(khub_user, khub_password), timeout=300.0)
     r = khub.get("/api/v1/documents")
@@ -258,8 +294,10 @@ def main() -> None:
 
     t0 = time.time()
     family_to_doc = _khub_upload_all(khub, corpus)
-    print(f"uploaded {len(family_to_doc)}/{len(corpus)} docs into khub "
-          f"(tag={DOC_TYPE_TAG}) in {time.time() - t0:.0f}s\n")
+    print(
+        f"uploaded {len(family_to_doc)}/{len(corpus)} docs into khub "
+        f"(tag={DOC_TYPE_TAG}) in {time.time() - t0:.0f}s\n"
+    )
 
     ours_rows, khub_rows = [], []
     try:
@@ -273,17 +311,17 @@ def main() -> None:
                 ours_ranked = _ours_ranked(container, queries[qid])
                 khub_ranked = khub_futures[qid].result()
 
-                ours_rows.append({"query_id": qid, "relevant_docs": sorted(rel),
-                                   **_score(ours_ranked, rel)})
-                khub_rows.append({"query_id": qid, "relevant_docs": sorted(rel),
-                                   **_score(khub_ranked, rel)})
+                ours_rows.append(
+                    {"query_id": qid, "relevant_docs": sorted(rel), **_score(ours_ranked, rel)}
+                )
+                khub_rows.append(
+                    {"query_id": qid, "relevant_docs": sorted(rel), **_score(khub_ranked, rel)}
+                )
                 if i % 20 == 0 or i == len(query_ids):
                     print(f"[{i}/{len(query_ids)}] queries scored")
     finally:
         _khub_cleanup(khub, family_to_doc, baseline_count)
         khub.close()
-
-    import pandas as pd
 
     ours_df = pd.DataFrame(ours_rows)
     khub_df = pd.DataFrame(khub_rows)
@@ -291,7 +329,9 @@ def main() -> None:
     khub_df.to_csv(Path(__file__).with_name("khub_ir_benchmark_khub.csv"), index=False)
 
     metric_cols = [c for c in ours_df.columns if c not in ("query_id", "relevant_docs")]
-    summary = pd.DataFrame({"ours": ours_df[metric_cols].mean(), "khub": khub_df[metric_cols].mean()})
+    summary = pd.DataFrame(
+        {"ours": ours_df[metric_cols].mean(), "khub": khub_df[metric_cols].mean()}
+    )
     summary["delta (ours - khub)"] = summary["ours"] - summary["khub"]
     summary = summary.round(4)
     summary_path = Path(__file__).with_name("khub_ir_benchmark_summary.csv")

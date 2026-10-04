@@ -3,7 +3,7 @@
 Dataset : BEIR SciFact (via ir_datasets) — 5,183 docs, 300 queries, gold qrels.
 Pipelines under test (this is the point of the rewrite): the SAME retrieval the
 app actually ships, not a hand-rolled cosine. The corpus is ingested through the
-real chunker + MiniLM embeddings into a throwaway localfs `container.vectors`,
+real chunker + MiniLM embeddings into disposable PostgreSQL/pgvector storage,
 and each ranker below is exactly what `/query` runs:
 
     DENSE           in-memory cosine (reference for the embedder alone)
@@ -18,6 +18,7 @@ Metrics : recall@k, nDCG@k, MRR@10 — computed directly from qrels.
 
 Run:  python -m eval.run_retrieval [max_docs] [--max-queries N]
 """
+
 from __future__ import annotations
 
 import math
@@ -25,15 +26,17 @@ import sys
 import time
 from collections import defaultdict
 
-import numpy as np
-
 import ir_datasets
-from app.shared.container import build_container
-from app.shared.domain.models import Modality
+import numpy as np
+from rank_bm25 import BM25Okapi
+
 from app.ingest.pipeline.chunker import chunk_elements
 from app.ingest.pipeline.elements import Element
-from app.shared.ports.vector_store import VectorPoint
 from app.retrieval.rag.query import _fetch_k, _rerank
+from app.shared.container import build_container
+from app.shared.domain.models import Modality
+from app.shared.ports.vector_store import VectorPoint
+from eval.storage import isolated_evaluation
 
 K_VALUES = [1, 3, 5, 10, 20, 100]
 _TENANT = "evaltenant"
@@ -42,7 +45,7 @@ _TENANT = "evaltenant"
 def _embed_batched(embedder, texts, batch=128):
     out = []
     for i in range(0, len(texts), batch):
-        out.extend(embedder.embed(texts[i:i + batch]))
+        out.extend(embedder.embed(texts[i : i + batch]))
         if (i // batch) % 10 == 0:
             print(f"  embedded {min(i + batch, len(texts))}/{len(texts)}", end="\r")
     print()
@@ -86,6 +89,12 @@ def _recall_at_k(ranked, rel, k):
     return len(set(ranked[:k]) & rel) / len(rel)
 
 
+def _precision_at_k(ranked, rel, k):
+    if k <= 0:
+        raise ValueError("k must be positive")
+    return len(set(ranked[:k]) & rel) / k
+
+
 def _ndcg_at_k(ranked, rel, k):
     dcg = sum(1.0 / math.log2(i + 2) for i, d in enumerate(ranked[:k]) if d in rel)
     idcg = sum(1.0 / math.log2(i + 2) for i in range(min(len(rel), k)))
@@ -109,7 +118,7 @@ def _evaluate(name, rank_fn, query_ids, queries, qrels):
             agg[f"recall@{k}"].append(_recall_at_k(ranked, rel, k))
             agg[f"ndcg@{k}"].append(_ndcg_at_k(ranked, rel, k))
         agg["mrr@10"].append(_rr_at_10(ranked, rel))
-    print(f"\n=== {name} ===   ({len(query_ids)} queries in {time.time()-t0:.0f}s)")
+    print(f"\n=== {name} ===   ({len(query_ids)} queries in {time.time() - t0:.0f}s)")
     print(f"{'metric':12} {'score':>7}")
     for k in K_VALUES:
         print(f"recall@{k:<5} {np.mean(agg[f'recall@{k}']):>7.4f}")
@@ -124,15 +133,19 @@ def _parse_args(argv):
     while i < len(argv):
         a = argv[i]
         if a == "--max-queries":
-            max_queries = int(argv[i + 1]); i += 2
+            max_queries = int(argv[i + 1])
+            i += 2
         elif a == "--no-rerank":
-            no_rerank = True; i += 1
+            no_rerank = True
+            i += 1
         else:
-            max_docs = int(a); i += 1
+            max_docs = int(a)
+            i += 1
     return max_docs, max_queries, no_rerank
 
 
-def main() -> None:
+@isolated_evaluation
+def main(settings) -> None:
     max_docs, max_queries, no_rerank = _parse_args(sys.argv[1:])
     ds = ir_datasets.load("beir/scifact/test")
 
@@ -149,38 +162,42 @@ def main() -> None:
         corpus.append((d.doc_id, (d.title + "\n\n" + d.text).strip()))
     print(f"corpus: {len(corpus)} docs | queries: {len(query_ids)} | qrels loaded\n")
 
-    # keep only qrels whose relevant docs are in the (possibly truncated) corpus
     doc_set = {d for d, _ in corpus}
-    query_ids = [qid for qid in query_ids
-                 if any(d in doc_set for d in qrels[qid])]
+    query_ids = [qid for qid in query_ids if any(d in doc_set for d in qrels[qid])]
     if max_queries:
         query_ids = query_ids[:max_queries]
         print(f"(evaluating first {len(query_ids)} queries)\n")
 
-    container = build_container()
+    container = build_container(settings)
 
     print("chunking + embedding corpus (real pipeline)...")
     chunk_texts, chunk_doc_ids = [], []
     for doc_id, text in corpus:
-        for ch in chunk_elements([Element(text, Modality.TEXT.value,
-                                          "text", "text_layer", 0, {})]):
+        for ch in chunk_elements([Element(text, Modality.TEXT.value, "text", "text_layer", 0, {})]):
             chunk_texts.append(ch.text)
             chunk_doc_ids.append(doc_id)
     t0 = time.time()
     mat = _embed_batched(container.embedder, chunk_texts)
-    print(f"  {len(chunk_texts)} chunks embedded in {time.time()-t0:.0f}s "
-          f"(dim={mat.shape[1]})")
+    print(f"  {len(chunk_texts)} chunks embedded in {time.time() - t0:.0f}s (dim={mat.shape[1]})")
 
-    # upsert into container.vectors so HYBRID/RERANK exercise the shipped search
     print("upserting into vector store...")
     per_doc: dict[str, list[VectorPoint]] = defaultdict(list)
-    for i, (doc_id, text) in enumerate(zip(chunk_doc_ids, chunk_texts)):
+    for i, (doc_id, text) in enumerate(zip(chunk_doc_ids, chunk_texts, strict=False)):
         cid = f"{doc_id}_{len(per_doc[doc_id]):03d}"
-        per_doc[doc_id].append(VectorPoint(
-            chunk_id=cid, tenant_id=_TENANT, vector=mat[i].tolist(),
-            payload={"_id": doc_id, "content": text, "user_id": "eval",
-                     "visibility": "tenant", "source_type": "text"},
-        ))
+        per_doc[doc_id].append(
+            VectorPoint(
+                chunk_id=cid,
+                tenant_id=_TENANT,
+                vector=mat[i].tolist(),
+                payload={
+                    "_id": doc_id,
+                    "content": text,
+                    "user_id": "eval",
+                    "visibility": "tenant",
+                    "source_type": "text",
+                },
+            )
+        )
     for pts in per_doc.values():
         container.vectors.upsert(pts)
     print(f"  {container.vectors.count(_TENANT)} chunk-vectors stored\n")
@@ -191,19 +208,14 @@ def main() -> None:
         order = np.argsort(-scores)[:2000]
         return _ranked_docs(chunk_doc_ids, order, max(K_VALUES))
 
-    from rank_bm25 import BM25Okapi
     bm25_ref = BM25Okapi([_tokens(t) for _, t in corpus])
     corpus_ids = [d for d, _ in corpus]
 
     def bm25_rank(qtext):
         scores = bm25_ref.get_scores(_tokens(qtext))
-        order = np.argsort(-scores)[:max(K_VALUES)]
+        order = np.argsort(-scores)[: max(K_VALUES)]
         return [corpus_ids[i] for i in order]
 
-    # Chunk pool for doc-level recall. DENSE ranks the whole corpus before
-    # deduping chunks->docs; HYBRID must pull an equally wide chunk pool or
-    # same-doc chunks collapse and doc-recall is unfairly starved. The localfs
-    # store scores every chunk regardless of top_k, so a wide pool is free.
     doc_pool = min(2000, len(chunk_texts))
 
     def hybrid_rank(qtext):
@@ -211,12 +223,6 @@ def main() -> None:
         hits = container.vectors.search(_TENANT, qv, top_k=doc_pool, query_text=qtext)
         return _dedup_hit_docs(hits, max(K_VALUES))
 
-    # --- HYBRID+RERANK (shipped cross-encoder second pass), mirroring
-    # app.retrieval.rag.query: fetch a wider fused pool, then reorder with the reranker.
-    # The cross-encoder runs one forward pass per candidate, so its pool is
-    # bounded (rerank_pool) for tractable runtime -- recall beyond that pool's
-    # doc coverage is capped by design; judge RERANK on nDCG@10/MRR (precision),
-    # not recall@100. ---
     rerank_pool = max(_fetch_k(container, max(K_VALUES)), 400)
 
     def rerank_rank(qtext):
@@ -225,16 +231,15 @@ def main() -> None:
         hits, _ = _rerank(container, qtext, hits, max(K_VALUES))
         return _dedup_hit_docs(hits, max(K_VALUES))
 
-    _evaluate("DENSE  (embedder alone: MiniLM + cosine)", dense_rank,
-              query_ids, queries, qrels)
+    _evaluate("DENSE  (embedder alone: MiniLM + cosine)", dense_rank, query_ids, queries, qrels)
     _evaluate("BM25   (lexical baseline)", bm25_rank, query_ids, queries, qrels)
-    _evaluate("HYBRID (shipped: dense+BM25 RRF)", hybrid_rank,
-              query_ids, queries, qrels)
+    _evaluate("HYBRID (shipped: dense+BM25 RRF)", hybrid_rank, query_ids, queries, qrels)
     if no_rerank:
         print("\n(--no-rerank: skipping the cross-encoder pass)")
     elif container.reranker is not None:
-        _evaluate("HYBRID+RERANK (shipped: + cross-encoder)", rerank_rank,
-                  query_ids, queries, qrels)
+        _evaluate(
+            "HYBRID+RERANK (shipped: + cross-encoder)", rerank_rank, query_ids, queries, qrels
+        )
     else:
         print("\n(reranker disabled: RERANKER_PROVIDER=none — skipping RERANK run)")
 

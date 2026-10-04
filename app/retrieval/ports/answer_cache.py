@@ -18,11 +18,11 @@ Only a Redis Stack adapter exists today (native RediSearch vector KNN). The cach
 is OPTIONAL: when no backend is configured, `container.cache` is None and the
 query path behaves exactly as before.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -30,11 +30,16 @@ class CacheHit:
     """A cache lookup that cleared the similarity threshold. `payload` is the full
     serialized QueryResult body (answer, contexts, chunk_ids, scores, ...) so the
     caller can reconstruct the exact response it would have generated."""
+
     payload: dict
-    similarity: float          # cosine similarity of the matched question, 0..1
+    similarity: float
 
 
 class AnswerCache(ABC):
+    @abstractmethod
+    def close(self) -> None:
+        raise NotImplementedError
+
     """Port for a per-user semantic cache of generated query answers."""
 
     @abstractmethod
@@ -42,15 +47,21 @@ class AnswerCache(ABC):
         """Create the backing index/collection if absent. Idempotent."""
 
     @abstractmethod
-    def get(self, tenant_id: str, user_id: str, qvec: list[float],
-            model: str) -> Optional[CacheHit]:
+    def get(self, tenant_id: str, user_id: str, qvec: list[float], model: str) -> CacheHit | None:
         """Return the best cached answer for this (tenant, user, model) whose
         question embedding is within the similarity threshold of `qvec`, or None.
         Entries from a superseded tenant generation are ignored."""
 
     @abstractmethod
-    def put(self, tenant_id: str, user_id: str, question: str,
-            qvec: list[float], model: str, payload: dict) -> None:
+    def put(
+        self,
+        tenant_id: str,
+        user_id: str,
+        question: str,
+        qvec: list[float],
+        model: str,
+        payload: dict,
+    ) -> None:
         """Store (or overwrite) the answer for this question under the tenant's
         current generation, with the configured TTL."""
 

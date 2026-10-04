@@ -1,11 +1,20 @@
 """Pipeline runner: advances a job through every ingestion stage in order,
 from raw bytes to searchable vectors."""
+
 from __future__ import annotations
 
 import logging
 import time
 from collections import Counter
+from dataclasses import replace as _replace
 
+from app.ingest.pipeline.chunker import ChunkSpec, chunk_elements
+from app.ingest.pipeline.delta import diff_chunks
+from app.ingest.pipeline.lease import renewed_lease
+from app.ingest.pipeline.metadata_extract import extract_metadata
+from app.ingest.pipeline.parse_process import extract_bounded
+from app.ingest.pipeline.provenance import location_str
+from app.ingest.pipeline.safety import UnsafeContentError
 from app.shared.container import Container
 from app.shared.domain.models import (
     Job,
@@ -15,71 +24,130 @@ from app.shared.domain.models import (
     Scope,
     finalize_chunks,
 )
-from app.ingest.pipeline.chunker import ChunkSpec, chunk_elements
-from app.ingest.pipeline.loaders import extract_document
-from app.ingest.pipeline.metadata_extract import extract_metadata
-from app.ingest.pipeline.provenance import location_str
-from app.ingest.pipeline.safety import run_with_timeout
 from app.shared.ports.vector_store import VectorPoint
-from app.shared.model_config import selected_chat_model
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
-# Order of stages the runner walks (DONE is set by queue.complete()).
 STAGES = [
-    JobStage.PARSE, JobStage.ROUTE, JobStage.EXTRACT, JobStage.CHUNK,
-    JobStage.METADATA, JobStage.EMBED, JobStage.BINARIZE, JobStage.UPSERT,
+    JobStage.PARSE,
+    JobStage.ROUTE,
+    JobStage.EXTRACT,
+    JobStage.CHUNK,
+    JobStage.METADATA,
+    JobStage.EMBED,
+    JobStage.BINARIZE,
+    JobStage.UPSERT,
 ]
 
 
 def run_job(container: Container, job: Job) -> None:
+    with renewed_lease(container.queue, job, container.settings.job_lease_seconds) as check:
+        _run_claimed_job(container, job, check)
+
+
+def _run_claimed_job(container: Container, job: Job, check) -> None:
     """Run one claimed job through all stages. Raises on failure (worker handles)."""
     doc = container.metadata.get_document(job.tenant_id, job.document_id)
     if doc is None:
         raise RuntimeError(f"document {job.document_id} missing for job {job.id}")
 
+    if job.blob_path is not None:
+        doc = _replace(
+            doc,
+            blob_path=job.blob_path,
+            content_sha256=job.content_sha256,
+            version=job.version or doc.version,
+            filename=job.filename or doc.filename,
+            source_type=job.source_type or doc.source_type,
+        )
+
     data = container.blob.get(doc.blob_path)
 
-    ctx = {"document": doc, "bytes": data, "assets": [], "elements": [],
-           "chunks": [], "embeddings": [], "binary": []}
+    ctx = {
+        "document": doc,
+        "bytes": data,
+        "assets": [],
+        "elements": [],
+        "chunks": [],
+        "embeddings": [],
+        "binary": [],
+        "chunk_delta": {},
+        "check_lease": check,
+    }
 
-    log.info("job start", extra={"event": "job_start", "file": doc.filename,
-             "source_type": doc.source_type, "bytes": len(data)})
+    log.info(
+        "job start",
+        extra={
+            "event": "job_start",
+            "file": doc.filename,
+            "source_type": doc.source_type,
+            "bytes": len(data),
+        },
+    )
 
     t_job = time.perf_counter()
     for seq, stage in enumerate(STAGES):
-        container.queue.set_stage(job.id, stage.value)
+        check()
+        container.queue.set_stage(job.id, stage.value, job.lease_token)
         t0 = time.perf_counter()
         try:
             _HANDLERS[stage](container, job, ctx)
         except Exception as exc:
-            # Record the failure as part of the trace, then let it propagate
-            # untouched -- the worker still owns retry/dead-lettering.
-            _record_event(container, job, stage, seq, JobEventStatus.ERROR,
-                          (time.perf_counter() - t0) * 1000, {"error": str(exc)})
+            _record_event(
+                container,
+                job,
+                stage,
+                seq,
+                JobEventStatus.ERROR,
+                (time.perf_counter() - t0) * 1000,
+                {"error": str(exc)},
+            )
             raise
         dur_ms = (time.perf_counter() - t0) * 1000
         detail = _stage_detail(stage, ctx)
-        container.metrics.incr(f"stage.{stage.value}", 1, dur_ms)
+        _metric(container, f"stage.{stage.value}", dur_ms)
         _record_event(container, job, stage, seq, JobEventStatus.OK, dur_ms, detail)
-        log.info("stage complete", extra={
-            "event": "stage", "stage": stage.value,
-            "duration_ms": round(dur_ms, 1), **detail,
-        })
+        log.debug(
+            "stage complete",
+            extra={
+                "event": "stage",
+                "stage": stage.value,
+                "duration_ms": round(dur_ms, 1),
+                **detail,
+            },
+        )
 
-    container.queue.complete(job.id)
-    # The knowledge base just changed (new/updated vectors are now searchable),
-    # so cached answers over it may be stale -- invalidate. This is the single
-    # choke point every successful ingest AND reprocess funnels through. No-op
-    # when the cache is disabled.
-    invalidate_cache_for(container, job.tenant_id, doc.scope)
+    try:
+        invalidate_cache_for(container, job.tenant_id, doc.scope)
+    except Exception:
+        log.warning(
+            "Published generation cache invalidation failed",
+            extra={"event": "cache_invalidation_failed", "job_id": job.id},
+            exc_info=True,
+        )
     total_ms = (time.perf_counter() - t_job) * 1000
-    container.metrics.incr("jobs.done", 1, total_ms)
-    log.info("job done", extra={
-        "event": "job_done", "file": doc.filename,
-        "elements": len(ctx["elements"]), "chunks": len(ctx["chunks"]),
-        "vectors": len(ctx.get("points", [])), "duration_ms": round(total_ms, 1),
-    })
+    _metric(container, "jobs.done", total_ms)
+    log.info(
+        "job done",
+        extra={
+            "event": "job_done",
+            "file": doc.filename,
+            "elements": len(ctx["elements"]),
+            "chunks": len(ctx["chunks"]),
+            "vectors": len(ctx.get("points", [])),
+            "duration_ms": round(total_ms, 1),
+        },
+    )
+
+
+def _metric(container, name, duration_ms):
+    try:
+        container.metrics.incr(name, 1, duration_ms)
+    except Exception:
+        log.warning(
+            "Ingestion metric could not be recorded",
+            extra={"event": "metric_write_failed", "metric": name},
+        )
 
 
 def invalidate_cache_for(container: Container, tenant_id: str, scope: str) -> None:
@@ -98,8 +166,40 @@ def invalidate_cache_for(container: Container, tenant_id: str, scope: str) -> No
         container.cache.invalidate_tenant(tenant_id)
 
 
-def _record_event(container: Container, job: Job, stage: JobStage, seq: int,
-                  status: JobEventStatus, dur_ms: float, detail: dict) -> None:
+def _record_version_delta(container: Container, job: Job, ctx: dict) -> None:
+    """Attach this run's chunk delta to the document version this job ingested.
+
+    A no-op in the store when no version row references this job -- `/reprocess`
+    re-runs the pipeline over unchanged bytes and so creates no new version. The
+    delta is still in the job trace either way (`_stage_detail`), which is where
+    a reprocess's "did my chunker change anything?" answer lives.
+
+    Same posture as `_record_event`: this is observability, so a store that
+    can't take the write must not fail an ingest that has already succeeded --
+    the job is `complete` by the time we get here.
+    """
+    delta = ctx.get("chunk_delta")
+    if not delta:
+        return
+    try:
+        container.metadata.set_version_delta(job.id, delta)
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "version delta not recorded",
+            extra={"event": "version_delta_failed", "job_id": job.id},
+            exc_info=True,
+        )
+
+
+def _record_event(
+    container: Container,
+    job: Job,
+    stage: JobStage,
+    seq: int,
+    status: JobEventStatus,
+    dur_ms: float,
+    detail: dict,
+) -> None:
     """Persist one stage outcome for the trace view.
 
     Trace-keeping is observability, never correctness: a metadata store that
@@ -107,31 +207,54 @@ def _record_event(container: Container, job: Job, stage: JobStage, seq: int,
     swallows and logs -- the same posture `_stage_metadata` takes for its
     best-effort LLM call."""
     try:
-        container.metadata.record_job_event(JobEvent(
-            job_id=job.id, document_id=job.document_id, tenant_id=job.tenant_id,
-            stage=stage.value, seq=seq, status=status.value,
-            duration_ms=round(dur_ms, 1), attempt=job.attempts, detail=detail,
-        ))
+        container.metadata.record_job_event(
+            JobEvent(
+                job_id=job.id,
+                document_id=job.document_id,
+                tenant_id=job.tenant_id,
+                stage=stage.value,
+                seq=seq,
+                status=status.value,
+                duration_ms=round(dur_ms, 1),
+                attempt=job.attempts,
+                detail=detail,
+            )
+        )
     except Exception:  # noqa: BLE001
-        log.warning("job event not recorded", extra={
-            "event": "job_event_failed", "stage": stage.value}, exc_info=True)
+        log.warning(
+            "job event not recorded",
+            extra={"event": "job_event_failed", "stage": stage.value},
+            exc_info=True,
+        )
 
 
 def _stage_detail(stage: JobStage, ctx: dict) -> dict:
     """Meaningful per-stage detail for the logs (what the stage actually did)."""
     if stage == JobStage.PARSE:
         rs = ctx.get("route_summary") or {}
-        return {"elements": len(ctx.get("elements", [])),
-                "by_modality": rs.get("by_modality"),
-                "by_extractor": rs.get("by_extractor")}
+        return {
+            "elements": len(ctx.get("elements", [])),
+            "by_modality": rs.get("by_modality"),
+            "by_extractor": rs.get("by_extractor"),
+        }
     if stage == JobStage.CHUNK:
         chunks = ctx.get("chunks", [])
-        return {"chunks": len(chunks),
-                "by_modality": dict(Counter(c.modality for c in chunks))}
+        delta = ctx.get("chunk_delta") or {}
+        return {
+            "chunks": len(chunks),
+            "by_modality": dict(Counter(c.modality for c in chunks)),
+            "added": delta.get("added"),
+            "removed": delta.get("removed"),
+            "unchanged": delta.get("unchanged"),
+        }
     if stage == JobStage.METADATA:
         meta = ctx.get("extracted_metadata") or {}
-        return {"author": bool(meta.get("author")), "date": bool(meta.get("date")),
-                "topics": len(meta.get("topics") or []), "entities": len(meta.get("entities") or [])}
+        return {
+            "author": bool(meta.get("author")),
+            "date": bool(meta.get("date")),
+            "topics": len(meta.get("topics") or []),
+            "entities": len(meta.get("entities") or []),
+        }
     if stage == JobStage.EMBED:
         return {"vectors": len(ctx.get("embeddings", []))}
     if stage == JobStage.UPSERT:
@@ -140,13 +263,17 @@ def _stage_detail(stage: JobStage, ctx: dict) -> dict:
 
 
 def _stage_parse(c: Container, job: Job, ctx: dict) -> None:
-    """Parse + route + extract (owned by the per-type loader -- routing is
-    inherently type-specific), bounded by a soft timeout so one pathological
-    file can't block the worker from ever reaching the next job."""
     doc = ctx["document"]
-    elements, route_summary = run_with_timeout(
-        lambda: extract_document(doc.filename, ctx["bytes"], c.gateway, c.settings),
-        timeout_seconds=c.settings.parse_timeout_seconds,
+    elements, route_summary = extract_bounded(
+        doc.filename,
+        ctx["bytes"],
+        c.gateway,
+        c.settings,
+        lambda key: c.metadata.get_extraction_artifact(job.id, doc.content_sha256, key),
+        lambda key, artifact: c.metadata.put_extraction_artifact(
+            job.id, doc.content_sha256, key, artifact
+        ),
+        check_lease=ctx["check_lease"],
     )
     ctx["elements"] = elements
     ctx["route_summary"] = route_summary
@@ -154,21 +281,19 @@ def _stage_parse(c: Container, job: Job, ctx: dict) -> None:
 
 
 def _stage_route(c: Container, job: Job, ctx: dict) -> None:
-    # Routing already recorded during parse (per-asset, on each element).
+
     pass
 
 
 def _stage_extract(c: Container, job: Job, ctx: dict) -> None:
-    # Extraction happened in parse (loaders emit final text/markdown elements).
+
     pass
 
 
 def _stage_chunk(c: Container, job: Job, ctx: dict) -> None:
     cfg = c.settings
     emb = c.embedder
-    # Size chunks against the ACTIVE embedder's real tokenizer + limit, so a
-    # chunk is never silently truncated at embed time. auto: derive from the
-    # embedder's max_tokens; else use the pinned config values.
+
     if cfg.chunk_auto_size:
         spec = ChunkSpec.auto(emb.max_tokens, min_tokens=cfg.chunk_min_tokens)
     else:
@@ -178,37 +303,38 @@ def _stage_chunk(c: Container, job: Job, ctx: dict) -> None:
             max_tokens=cfg.chunk_max_tokens,
             min_tokens=cfg.chunk_min_tokens,
         )
-    records = chunk_elements(ctx["elements"], spec,
-                             count=emb.count_tokens, embed_max=emb.max_tokens)
+    records = chunk_elements(
+        ctx["elements"], spec, count=emb.count_tokens, embed_max=emb.max_tokens
+    )
+    if not records and any(element.text.strip() for element in ctx["elements"]):
+        raise UnsafeContentError("Meaningful extracted evidence produced no indexable chunks")
     doc = ctx["document"]
-    # Stamp ids/hashes HERE, not implicitly inside the store. `_stage_upsert`
-    # uses `ch.id` as the vector-store point id, so the pipeline must own that
-    # value rather than read it back off objects a store happened to mutate.
-    finalize_chunks(doc.id, records)
-    c.metadata.replace_document_chunks(doc.tenant_id, doc.id, records)
+    previous = c.metadata.get_document_chunks(doc.tenant_id, doc.id)
+    finalize_chunks(job.generation_id or doc.id, records)
+    ctx["chunk_delta"] = diff_chunks(previous, records)
     ctx["chunks"] = records
     if not records:
-        log.warning("extracted nothing", extra={
-            "event": "empty_extraction", "file": doc.filename,
-            "source_type": doc.source_type})
+        log.warning(
+            "extracted nothing",
+            extra={
+                "event": "empty_extraction",
+                "file": doc.filename,
+                "source_type": doc.source_type,
+            },
+        )
 
 
 def _stage_metadata(c: Container, job: Job, ctx: dict) -> None:
     """Best-effort document metadata (author/date/topics/entities) via a small LLM.
     Auxiliary step: never fails the job (see app.ingest.pipeline.metadata_extract)."""
-    doc = ctx["document"]
+    ctx["document"]
     chunks = ctx["chunks"]
-    if not chunks:
+    if not chunks or not c.settings.metadata_extraction_enabled:
         ctx["extracted_metadata"] = {}
         return
 
-    sample_text = "\n\n".join(ch.text for ch in chunks)   # truncated to budget inside extract_metadata
-    result = extract_metadata(
-        c.gateway,
-        selected_chat_model(c.metadata, c.settings.chat_model),
-        sample_text,
-    )
-    c.metadata.set_document_metadata(doc.tenant_id, doc.id, result)
+    sample_text = "\n\n".join(ch.text for ch in chunks)
+    result = extract_metadata(c.gateway, c.settings.chat_model, sample_text)
     ctx["extracted_metadata"] = result
 
 
@@ -217,12 +343,11 @@ def _stage_embed(c: Container, job: Job, ctx: dict) -> None:
     if not chunks:
         ctx["embeddings"] = []
         return
-    ctx["embeddings"] = c.embedder.embed([ch.text for ch in chunks])
+    ctx["embeddings"] = c.embedder.embed_documents([ch.text for ch in chunks])
 
 
 def _stage_binarize(c: Container, job: Job, ctx: dict) -> None:
-    # Binarization deferred: we store float embeddings for now. This stage is a
-    # passthrough so a sign-threshold + bit-pack step can slot in here later.
+
     ctx["vectors"] = ctx["embeddings"]
 
 
@@ -230,18 +355,15 @@ def _stage_upsert(c: Container, job: Job, ctx: dict) -> None:
     doc = ctx["document"]
     chunks = ctx["chunks"]
     vectors = ctx["vectors"]
-    if not chunks:
-        return
-    if len(vectors) != len(chunks):        # never silently drop chunks
-        raise RuntimeError(
-            f"embedding count {len(vectors)} != chunk count {len(chunks)}")
+    if len(vectors) != len(chunks):
+        raise RuntimeError(f"embedding count {len(vectors)} != chunk count {len(chunks)}")
 
-    # idempotent reprocess: drop any prior vectors for this document first
-    c.vectors.delete_by_document(doc.tenant_id, doc.id)
+    if not chunks:
+        raise UnsafeContentError("Empty extraction cannot replace a published generation")
 
     extracted_metadata = ctx.get("extracted_metadata") or {}
     points: list[VectorPoint] = []
-    for ch, vec in zip(chunks, vectors):
+    for ch, vec in zip(chunks, vectors, strict=False):
         payload = {
             "_id": doc.id,
             "user_id": doc.owner_user_id,
@@ -252,20 +374,20 @@ def _stage_upsert(c: Container, job: Job, ctx: dict) -> None:
             "source_type": doc.source_type,
             "content": ch.text,
             "filename": doc.filename,
-            "location": location_str(ch.meta),   # e.g. "p.4" or "Business Context" section
+            "version": doc.version,
+            "location": location_str(ch.meta),
             "meta": ch.meta,
-            # document-level LLM-extracted signal (app.ingest.pipeline.metadata_extract),
-            # folded into BM25's lexical text by the vector store adapters --
-            # otherwise this is paid for at ingest and never touches ranking.
             "topics": extracted_metadata.get("topics") or [],
             "entities": extracted_metadata.get("entities") or [],
             "author": extracted_metadata.get("author"),
         }
-        # ch.id is the deterministic point identity (= document id + NNN)
-        points.append(VectorPoint(chunk_id=ch.id, tenant_id=doc.tenant_id,
-                                  vector=vec, payload=payload))
 
-    c.vectors.upsert(points)
+        points.append(
+            VectorPoint(chunk_id=ch.id, tenant_id=doc.tenant_id, vector=vec, payload=payload)
+        )
+
+    ctx["check_lease"]()
+    c.publication.publish(job, doc, chunks, points, extracted_metadata, ctx["chunk_delta"])
     ctx["points"] = points
 
 

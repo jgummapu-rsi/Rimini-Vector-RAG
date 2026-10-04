@@ -30,6 +30,16 @@ STRICT_TRANSCRIBE_PROMPT = (
     "output nothing. Return only the transcription, with no commentary."
 )
 
+FIGURE_EXTRACTION_PROMPT = (
+    "Extract the evidence visibly present in this figure. First transcribe every "
+    "readable title, label, legend entry, axis, value, annotation, and caption exactly "
+    "as shown. Then briefly describe explicit visual relationships such as arrows, "
+    "grouping, sequence, or plotted trends. Do not infer causes, intent, missing values, "
+    "or facts not directly visible. Preserve exact identifiers and numbers. If the figure "
+    "is a table, return a GitHub-flavored markdown table with exactly the visible cells. "
+    "Mark unreadable text as [illegible]. Return only the extracted evidence."
+)
+
 METADATA_EXTRACTION_PROMPT = (
     "You extract document metadata, not summaries. Read the document text below and "
     "extract ONLY what is explicitly stated or unambiguously evident in the text. "

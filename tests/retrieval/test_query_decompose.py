@@ -1,12 +1,14 @@
 """Query decomposition: the free heuristic, the LLM call's parsing/fallback
 behavior, and end-to-end merging of independently-retrieved sub-questions."""
+
 import json
 
-from app.shared.domain.models import Principal, Role
-from app.shared.ports.vector_store import VectorPoint
 from app.retrieval.rag.access import access_predicate
 from app.retrieval.rag.decompose import decompose_question, looks_multi_part
 from app.retrieval.rag.query import answer_query
+from app.shared.domain.models import Principal, Role
+from app.shared.ports.vector_store import VectorPoint
+from tests.conftest import structured_answer
 
 
 def test_looks_multi_part_detects_comparison():
@@ -33,10 +35,14 @@ class _FakeGateway:
 
 
 def test_decompose_question_parses_valid_decomposition():
-    gw = _FakeGateway(json.dumps({
-        "decompose": True,
-        "sub_questions": ["What does SU53 do?", "What does STAUTHTRACE do?"],
-    }))
+    gw = _FakeGateway(
+        json.dumps(
+            {
+                "decompose": True,
+                "sub_questions": ["What does SU53 do?", "What does STAUTHTRACE do?"],
+            }
+        )
+    )
     subs = decompose_question(gw, "gpt-5-nano", "difference between SU53 and STAUTHTRACE")
     assert subs == ["What does SU53 do?", "What does STAUTHTRACE do?"]
     assert gw.calls == 1
@@ -51,10 +57,14 @@ def test_decompose_question_respects_model_saying_no():
 
 
 def test_decompose_question_caps_at_four():
-    gw = _FakeGateway(json.dumps({
-        "decompose": True,
-        "sub_questions": [f"sub question {i}" for i in range(10)],
-    }))
+    gw = _FakeGateway(
+        json.dumps(
+            {
+                "decompose": True,
+                "sub_questions": [f"sub question {i}" for i in range(10)],
+            }
+        )
+    )
     subs = decompose_question(gw, "gpt-5-nano", "some question")
     assert len(subs) == 4
 
@@ -68,6 +78,7 @@ def test_decompose_question_falls_back_gracefully_on_gateway_error():
     class _BrokenGateway:
         def chat(self, messages, model, temperature=0.0):
             raise RuntimeError("gateway down")
+
     assert decompose_question(_BrokenGateway(), "gpt-5-nano", "some question") == []
 
 
@@ -93,34 +104,62 @@ def _decompose_or_stub_gateway(decomposition_json: str, answer: str):
             calls["decompose"] += 1
             return decomposition_json
         calls["generate"] += 1
-        return answer
+        return structured_answer(answer)
 
     return chat, calls
 
 
 def test_answer_query_merges_contexts_from_both_sub_questions(container):
     vs = container.vectors
-    v_pricing = container.embedder.embed(["SAP pricing procedure determination condition records"])[0]
+    v_pricing = container.embedder.embed(["SAP pricing procedure determination condition records"])[
+        0
+    ]
     v_security = container.embedder.embed(["SAP security roles PFCG authorization objects"])[0]
-    vs.upsert([_pt("cP001", "T1", v_pricing, _id="docP", user_id="A", visibility="tenant",
-                   content="Pricing procedure determination uses condition records.")])
-    vs.upsert([_pt("cS001", "T1", v_security, _id="docS", user_id="A", visibility="tenant",
-                   content="PFCG role design uses authorization objects.")])
+    vs.upsert(
+        [
+            _pt(
+                "cP001",
+                "T1",
+                v_pricing,
+                _id="docP",
+                user_id="A",
+                visibility="tenant",
+                content="Pricing procedure determination uses condition records.",
+            )
+        ]
+    )
+    vs.upsert(
+        [
+            _pt(
+                "cS001",
+                "T1",
+                v_security,
+                _id="docS",
+                user_id="A",
+                visibility="tenant",
+                content="PFCG role design uses authorization objects.",
+            )
+        ]
+    )
 
-    decomposition = json.dumps({
-        "decompose": True,
-        "sub_questions": [
-            "How does pricing procedure determination use condition records?",
-            "How does PFCG role design use authorization objects?",
-        ],
-    })
+    decomposition = json.dumps(
+        {
+            "decompose": True,
+            "sub_questions": [
+                "How does pricing procedure determination use condition records?",
+                "How does PFCG role design use authorization objects?",
+            ],
+        }
+    )
     chat, calls = _decompose_or_stub_gateway(decomposition, "stub answer")
     container.gateway.chat = chat
 
     result = answer_query(
-        container, "T1",
+        container,
+        "T1",
         "How does pricing procedure determination relate to PFCG role design?",
-        top_k=5, access=access_predicate(_principal("T1", "A", "member")),
+        top_k=5,
+        access=access_predicate(_principal("T1", "A", "member")),
     )
 
     assert result.sub_questions == [
@@ -137,17 +176,31 @@ def test_answer_query_merges_contexts_from_both_sub_questions(container):
 def test_answer_query_skips_decomposition_for_simple_question(container):
     vs = container.vectors
     v = container.embedder.embed(["quarterly revenue figures"])[0]
-    vs.upsert([_pt("cQ001", "T1", v, _id="docQ", user_id="A", visibility="tenant",
-                   content="Quarterly revenue grew across all regions.")])
+    vs.upsert(
+        [
+            _pt(
+                "cQ001",
+                "T1",
+                v,
+                _id="docQ",
+                user_id="A",
+                visibility="tenant",
+                content="Quarterly revenue grew across all regions.",
+            )
+        ]
+    )
 
     chat, calls = _decompose_or_stub_gateway("should never be called", "stub answer")
     container.gateway.chat = chat
 
     result = answer_query(
-        container, "T1", "What was the quarterly revenue?",
-        top_k=5, access=access_predicate(_principal("T1", "A", "member")),
+        container,
+        "T1",
+        "What was the quarterly revenue?",
+        top_k=5,
+        access=access_predicate(_principal("T1", "A", "member")),
     )
 
     assert result.sub_questions == []
-    assert calls["decompose"] == 0   # no wasted LLM call for a simple question
+    assert calls["decompose"] == 0
     assert calls["generate"] == 1

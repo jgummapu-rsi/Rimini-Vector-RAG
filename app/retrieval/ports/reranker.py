@@ -7,6 +7,7 @@ hybrid retrieval (dense+BM25 RRF) hands it. `reranker_provider=none` means no
 adapter is built at all (Container.reranker stays None); callers must treat
 that as "skip reranking", not as a no-op adapter.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -14,6 +15,10 @@ from abc import ABC, abstractmethod
 
 class Reranker(ABC):
     """Port for scoring a query against a candidate pool of documents."""
+
+    def prepare(self) -> None:
+        """Optional startup hook; stateless rerankers need no preparation."""
+        return None
 
     @abstractmethod
     def score(self, query: str, documents: list[str]) -> list[float]:

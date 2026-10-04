@@ -8,6 +8,7 @@ someone noticed and restarted the process.
 These tests drive `main()` directly with a scripted queue and a stop sentinel,
 so no worker process or database outage is needed.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -24,8 +25,9 @@ class _Stop(BaseException):
 
 
 def _job(jid="j1"):
-    return Job(id=jid, document_id="d1", tenant_id="t1",
-               stage="parse", status="running", attempts=0)
+    return Job(
+        id=jid, document_id="d1", tenant_id="t1", stage="parse", status="running", attempts=0
+    )
 
 
 class _ScriptedQueue:
@@ -47,7 +49,7 @@ class _ScriptedQueue:
             raise item
         return item
 
-    def retry_or_dead(self, job_id, error, max_attempts):
+    def retry_or_dead(self, job_id, error, max_attempts, lease_token):
         self.retried.append((job_id, error, max_attempts))
         return "queued"
 
@@ -70,6 +72,9 @@ class _Container:
         self.settings = settings
         self.metrics = _Metrics()
 
+    def close(self):
+        self.closed = True
+
 
 class _Settings:
     worker_poll_seconds = 0.0
@@ -84,6 +89,7 @@ def run_worker(monkeypatch):
     returned on the container as `.slept` -- the fixture owns the sleep patch so
     a test cannot install its own and have the fixture clobber it.
     """
+
     def _run(queue, run_job=None):
         container = _Container(queue, _Settings())
         container.slept = []
@@ -94,10 +100,8 @@ def run_worker(monkeypatch):
         with pytest.raises(_Stop):
             worker.main()
         return container
+
     return _run
-
-
-# ------------------------------------------------------- queue resilience --
 
 
 def test_worker_survives_a_queue_error_and_keeps_polling(run_worker):
@@ -122,15 +126,11 @@ def test_worker_backs_off_progressively_while_the_queue_is_down(run_worker):
 
 
 def test_backoff_resets_once_the_queue_recovers(run_worker):
-    # fail, fail, recover with a job, then fail again
+
     q = _ScriptedQueue(RuntimeError("x"), RuntimeError("x"), _job(), RuntimeError("x"))
     slept = run_worker(q).slept
-    # the delay after recovery starts from the bottom again, not from where it
-    # left off -- a recovered queue must not inherit a long backoff
+
     assert slept[-1] == slept[0]
-
-
-# --------------------------------------------------------- job resilience --
 
 
 def test_a_failing_job_is_retried_and_the_worker_continues(run_worker):
@@ -147,8 +147,9 @@ def test_worker_survives_the_failure_handler_itself_failing(run_worker):
     """If the store is down, recording the failure ALSO throws. The worker must
     still not die -- the job is left running for the reaper, and every other
     job keeps being served."""
+
     class _BrokenQueue(_ScriptedQueue):
-        def retry_or_dead(self, job_id, error, max_attempts):
+        def retry_or_dead(self, job_id, error, max_attempts, lease_token):
             raise RuntimeError("database is down too")
 
     def boom(_c, _j):
@@ -166,9 +167,6 @@ def test_an_idle_queue_just_polls(run_worker):
     assert q.retried == []
 
 
-# --------------------------------------------------------- reaper resilience --
-
-
 def test_worker_calls_the_reaper_every_poll_cycle(run_worker):
     q = _ScriptedQueue(_job(), None, None)
     run_worker(q)
@@ -178,6 +176,7 @@ def test_worker_calls_the_reaper_every_poll_cycle(run_worker):
 def test_worker_survives_the_reaper_itself_failing(run_worker):
     """A reaper failure (store down) must not kill the worker or block normal
     job claiming -- it's a best-effort side task, not on the critical path."""
+
     class _BrokenReaperQueue(_ScriptedQueue):
         def reap_expired(self, max_attempts):
             self.reap_calls += 1

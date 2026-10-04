@@ -4,57 +4,60 @@ Every test runs against a hermetic container rooted at a per-test tmp dir, with
 the deterministic local embedder (no gateway needed). File fixtures are built in
 memory so tests carry no binary blobs.
 """
+
 from __future__ import annotations
 
 import io
+import json
+import os
 
 import pytest
+from docx import Document
+from fpdf import FPDF
+from openpyxl import Workbook
 
-from app.shared.config import Settings
 from app.shared.container import build_container
 from app.shared.domain.models import Role
+from scripts.disposable_storage import disposable_settings
+
+
+def structured_answer(text: str, sources=("1",)) -> str:
+    return json.dumps(
+        {
+            "status": "answered",
+            "answer": text + " " + " ".join(f"[{source}]" for source in sources),
+            "source_ids": list(sources),
+        }
+    )
 
 
 @pytest.fixture
-def settings(tmp_path):
-    return Settings(
-        data_dir=tmp_path / "data",
-        metadata_backend="sqlite",
-        blob_backend="localfs",
-        vector_backend="localfile",
-        queue_backend="sqlite",
-        embedding_provider="minilm",
-        # Both explicitly blank, not just api_key: Settings reads .env, and a
-        # developer's real LITELLM_BASE_URL there would otherwise leak into
-        # the test container, making onboarding_status()/gateway tests
-        # non-hermetic (see app.api.onboarding_routes).
-        litellm_base_url="",
-        litellm_api_key="",
-        vision_model="test-vision",
-        max_attempts=3,
-        worker_poll_seconds=0.01,
-        # reranking is opt-in per-test (see tests/test_query_rerank.py) so the
-        # rest of the suite isn't coupled to a second real model download/load.
-        reranker_provider="none",
-        # Cache OFF for the general suite, explicitly. Settings reads .env, so
-        # once a developer sets a real REDIS_URL there, every ingesting test
-        # would otherwise call invalidate_tenant() and write a permanent
-        # `ans_idx:gen:<tenant>` key -- for a throwaway tenant, in the REAL
-        # cache's namespace, with no TTL. Measured at ~29 orphaned keys per run.
-        # The answer-cache tests opt in deliberately, under their own index name.
-        redis_url="",
+def storage_settings():
+    with disposable_settings(os.environ["TEST_DATABASE_URL"], os.environ["TEST_REDIS_URL"]) as cfg:
+        yield cfg
+
+
+@pytest.fixture
+def settings(tmp_path, storage_settings):
+    return storage_settings.model_copy(
+        update=dict(
+            data_dir=tmp_path / "data",
+            embedding_provider="minilm",
+            litellm_base_url="",
+            litellm_api_key="",
+            vision_model="test-vision",
+            max_attempts=3,
+            worker_poll_seconds=0.01,
+            reranker_provider="none",
+        )
     )
 
 
 @pytest.fixture
 def container(settings):
-    # real MiniLM embedder (ONNX). The model is process-cached, so it loads once
-    # for the whole test session.
+
     c = build_container(settings)
-    # Default chat() stub so every test stays offline (no real gateway call) — the
-    # metadata-extraction pipeline stage calls chat() on every ingest. Tests that
-    # care about a specific chat response (query answers, populated metadata)
-    # override this via monkeypatch, same as before this stub existed.
+
     c.gateway.chat = lambda messages, model, temperature=0.0: (
         '{"author": null, "date": null, "topics": [], "entities": []}'
     )
@@ -73,9 +76,12 @@ def tenant(container):
     viewer_id = container.metadata.create_user(tid, "viewer@acme.test", Role.VIEWER.value, viewer)
     return {
         "id": tid,
-        "admin_token": admin, "admin_id": admin_id,
-        "member_token": member, "member_id": member_id,
-        "viewer_token": viewer, "viewer_id": viewer_id,
+        "admin_token": admin,
+        "admin_id": admin_id,
+        "member_token": member,
+        "member_id": member_id,
+        "viewer_token": viewer,
+        "viewer_id": viewer_id,
     }
 
 
@@ -93,21 +99,25 @@ def _csv_bytes() -> bytes:
 
 
 def _txt_bytes() -> bytes:
-    para = ("The quarterly review covers revenue and costs. "
-            "Revenue grew across regions with APAC leading. ") * 4
+    para = (
+        "The quarterly review covers revenue and costs. "
+        "Revenue grew across regions with APAC leading. "
+    ) * 4
     return ("\n\n".join([para, para, "# Outlook\n\n" + para])).encode()
 
 
 def _docx_bytes() -> bytes:
-    from docx import Document
     d = Document()
     d.add_heading("Annual Report", level=1)
     d.add_paragraph("Revenue grew across all regions this year. " * 6)
     d.add_heading("Financials", level=2)
     d.add_paragraph("Costs were controlled while margins improved. " * 6)
     t = d.add_table(rows=1, cols=3)
-    t.rows[0].cells[0].text, t.rows[0].cells[1].text, t.rows[0].cells[2].text = \
-        "Region", "Revenue", "Growth"
+    t.rows[0].cells[0].text, t.rows[0].cells[1].text, t.rows[0].cells[2].text = (
+        "Region",
+        "Revenue",
+        "Growth",
+    )
     for r in [("APAC", "120", "18%"), ("EMEA", "90", "9%")]:
         c = t.add_row().cells
         c[0].text, c[1].text, c[2].text = r
@@ -117,7 +127,6 @@ def _docx_bytes() -> bytes:
 
 
 def _xlsx_bytes() -> bytes:
-    from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
     ws.title = "Sales"
@@ -133,9 +142,7 @@ def _xlsx_bytes() -> bytes:
 
 
 def _pdf_bytes() -> bytes:
-    from fpdf import FPDF
-    para = ("The quarterly review covers revenue and costs. "
-            "Revenue grew across regions. ") * 4
+    para = ("The quarterly review covers revenue and costs. Revenue grew across regions. ") * 4
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
     pdf.set_font("Helvetica", size=12)
@@ -158,12 +165,15 @@ def files() -> dict[str, bytes]:
 
 class FakeGateway:
     """Stand-in for the LiteLLM client in tests that exercise vision routing."""
+
     def __init__(self, vision_return: str = "A bar chart of quarterly revenue."):
         self._v = vision_return
         self.vision_calls = 0
+        self.vision_prompts = []
 
     def vision(self, image_bytes: bytes, prompt: str, mime: str = "image/png") -> str:
         self.vision_calls += 1
+        self.vision_prompts.append(prompt)
         return self._v
 
     def ocr(self, image_bytes: bytes, mime: str = "image/png") -> str:
@@ -175,6 +185,7 @@ class FakeGateway:
 
 class NoGateway:
     """Fails loudly if any gateway call happens (offline-path assertion)."""
+
     def vision(self, *a, **k):
         raise AssertionError("gateway.vision called on an offline file")
 

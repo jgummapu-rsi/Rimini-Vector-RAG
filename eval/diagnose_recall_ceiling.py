@@ -23,18 +23,19 @@ table at the current depth; compare across N to see how much a WIDER pool buys.
 
 Run:  python -m eval.diagnose_recall_ceiling
 """
+
 from __future__ import annotations
 
 import time
 from collections import defaultdict
 
+import ir_datasets
 import numpy as np
 
-import ir_datasets
 from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
 from app.shared.adapters.pgvector.db import transaction
-from app.shared.config import settings
 from app.shared.container import build_container
+from eval.storage import isolated_evaluation, populate_scifact
 
 EVAL_TENANT_NAME = "scifact-eval-postgres-benchmark"
 EMBED_REPO = "Xenova/bge-base-en-v1.5"
@@ -84,20 +85,30 @@ def _first_rank(doc_list, gold):
     return None
 
 
-def main() -> None:
-    embedder = OnnxEmbedder(EMBED_REPO, EMBED_DIM, pooling="cls",
-                            query_instruction=EMBED_QUERY_INSTRUCTION, max_length=512)
-    container = build_container(embedder=embedder)
+@isolated_evaluation
+def main(settings) -> None:
+    embedder = OnnxEmbedder(
+        EMBED_REPO,
+        EMBED_DIM,
+        pooling="cls",
+        query_instruction=EMBED_QUERY_INSTRUCTION,
+        max_length=512,
+    )
+    container = build_container(settings, embedder=embedder)
+    ds = ir_datasets.load("beir/scifact/test")
+    tid = populate_scifact(container, ds, EVAL_TENANT_NAME)
 
     with transaction(settings.postgres_dsn) as cur:
-        cur.execute("SELECT id FROM tenants WHERE name = %s", (EVAL_TENANT_NAME,))
-        tid = cur.fetchone()["id"]
-        cur.execute("SELECT COUNT(*) AS n, COUNT(DISTINCT document_id) AS d "
-                    "FROM vector_chunks WHERE tenant_id=%s AND deleted=false", (tid,))
+        cur.execute(
+            "SELECT COUNT(*) AS n, COUNT(DISTINCT document_id) AS d "
+            "FROM vector_chunks WHERE tenant_id=%s AND deleted=false",
+            (tid,),
+        )
         row = cur.fetchone()
     n_chunks, n_docs = row["n"], row["d"]
-    print(f"tenant {tid} | {n_chunks} chunks / {n_docs} docs "
-          f"({n_chunks / n_docs:.2f} chunks/doc)\n")
+    print(
+        f"tenant {tid} | {n_chunks} chunks / {n_docs} docs ({n_chunks / n_docs:.2f} chunks/doc)\n"
+    )
 
     ds = ir_datasets.load("beir/scifact/test")
     qrels = defaultdict(dict)
@@ -105,14 +116,14 @@ def main() -> None:
         qrels[q.query_id][q.doc_id] = q.relevance
     queries = {q.query_id: q.text for q in ds.queries_iter()}
     corpus_docs = {d.doc_id for d in ds.docs_iter()}
-    query_ids = [qid for qid in qrels if qid in queries
-                 and any(d in corpus_docs for d in qrels[qid])]
+    query_ids = [
+        qid for qid in qrels if qid in queries and any(d in corpus_docs for d in qrels[qid])
+    ]
     print(f"queries: {len(query_ids)}\n")
 
-    # per-depth reachability counts, per channel
     reach = {ch: {N: 0 for N in DEPTHS} for ch in ("dense", "lexical", "union")}
-    n_rel = []           # gold docs per query (SciFact is usually 1)
-    dense_ranks, lex_ranks, best_ranks = [], [], []  # gold doc's rank (None=missed)
+    n_rel = []
+    dense_ranks, lex_ranks, best_ranks = [], [], []
     scored = 0
 
     t0 = time.time()
@@ -139,47 +150,58 @@ def main() -> None:
                 l_hit = lr is not None and lr <= N
                 reach["dense"][N] += d_hit
                 reach["lexical"][N] += l_hit
-                reach["union"][N] += (d_hit or l_hit)
+                reach["union"][N] += d_hit or l_hit
 
             if n % 25 == 0:
-                print(f"  {n}/{len(query_ids)}  ({time.time()-t0:.0f}s)", end="\r")
-    print(f"\n  measured in {time.time()-t0:.0f}s\n")
+                print(f"  {n}/{len(query_ids)}  ({time.time() - t0:.0f}s)", end="\r")
+    print(f"\n  measured in {time.time() - t0:.0f}s\n")
 
     q = scored
-    print(f"avg gold docs/query: {np.mean(n_rel):.2f} "
-          f"(SciFact is mostly single-answer)\n")
+    print(f"avg gold docs/query: {np.mean(n_rel):.2f} (SciFact is mostly single-answer)\n")
 
     print("=== oracle recall@10 ceiling by pool depth N (gold doc reachable in channel) ===")
     print("  interpretation: max recall@10 a PERFECT reranker could reach if it")
     print("  fetched N candidates/channel. Current live pipeline fetches N=20.\n")
     print(f"{'depth N':>8} {'dense':>9} {'lexical':>9} {'union':>9}")
     for N in DEPTHS:
-        print(f"{N:>8} {reach['dense'][N]/q:>9.4f} "
-              f"{reach['lexical'][N]/q:>9.4f} {reach['union'][N]/q:>9.4f}")
+        print(
+            f"{N:>8} {reach['dense'][N] / q:>9.4f} "
+            f"{reach['lexical'][N] / q:>9.4f} {reach['union'][N] / q:>9.4f}"
+        )
 
     missed = sum(1 for b in best_ranks if b is None)
-    print(f"\ngold doc UNREACHABLE in either channel within top-{DEEP}: "
-          f"{missed}/{q} ({missed/q:.4f}) "
-          f"-> hard ceiling recall@10 <= {1 - missed/q:.4f} at this depth")
+    print(
+        f"\ngold doc UNREACHABLE in either channel within top-{DEEP}: "
+        f"{missed}/{q} ({missed / q:.4f}) "
+        f"-> hard ceiling recall@10 <= {1 - missed / q:.4f} at this depth"
+    )
 
-    # where the gold doc sits when it IS reachable (union best rank)
     reachable = [b for b in best_ranks if b is not None]
     if reachable:
         arr = np.array(reachable)
-        print(f"\nwhen reachable, gold doc's best dedup rank across channels: "
-              f"median={int(np.median(arr))}, p90={int(np.percentile(arr,90))}, "
-              f"max={int(arr.max())}")
+        print(
+            f"\nwhen reachable, gold doc's best dedup rank across channels: "
+            f"median={int(np.median(arr))}, p90={int(np.percentile(arr, 90))}, "
+            f"max={int(arr.max())}"
+        )
         for cut in (10, 20, 50):
             print(f"  reachable within top-{cut}: {(arr <= cut).mean():.4f}")
 
-    dense_only = sum(1 for dr, lr in zip(dense_ranks, lex_ranks)
-                     if dr is not None and dr <= 20 and (lr is None or lr > 20))
-    lex_only = sum(1 for dr, lr in zip(dense_ranks, lex_ranks)
-                   if lr is not None and lr <= 20 and (dr is None or dr > 20))
-    print(f"\nat the live depth N=20, gold reachable via:")
+    dense_only = sum(
+        1
+        for dr, lr in zip(dense_ranks, lex_ranks, strict=False)
+        if dr is not None and dr <= 20 and (lr is None or lr > 20)
+    )
+    lex_only = sum(
+        1
+        for dr, lr in zip(dense_ranks, lex_ranks, strict=False)
+        if lr is not None and lr <= 20 and (dr is None or dr > 20)
+    )
+    print("\nat the live depth N=20, gold reachable via:")
     print(f"  dense only (lexical missed it): {dense_only}")
-    print(f"  lexical only (dense missed it): {lex_only}   "
-          f"<- lexical channel's unique contribution")
+    print(
+        f"  lexical only (dense missed it): {lex_only}   <- lexical channel's unique contribution"
+    )
 
 
 if __name__ == "__main__":

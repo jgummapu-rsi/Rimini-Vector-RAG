@@ -1,5 +1,4 @@
-"""Postgres/pgvector VectorStore: ONE ROW PER CHUNK in `vector_chunks`, unlike
-the local adapter's one-JSON-blob-per-document layout (a SQLite-only trick).
+"""Postgres/pgvector VectorStore: ONE ROW PER CHUNK in `vector_chunks`.
 One row per chunk matches VectorPoint 1:1 and lets pgvector's HNSW index do
 real index-accelerated ANN search (ORDER BY embedding <=> query LIMIT n)
 instead of loading every candidate into Python.
@@ -19,31 +18,43 @@ channels count equally and every candidate is eligible -- the cross-encoder
 reranker in app.retrieval.rag.query is the downstream precision arbiter, so retrieval
 favors recall (surface everything plausible) and lets the reranker decide order.
 """
+
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 import psycopg2.errors
 from psycopg2.extras import Json
 
-from app.shared.adapters.pgvector.db import transaction
+from app.retrieval.rag.context import matching_roster
+from app.retrieval.rag.provenance import citation_provenance
 from app.shared.adapters import bm25
+from app.shared.adapters.pgvector.db import transaction
+from app.shared.adapters.pgvector.profile import (
+    check_profile,
+    ensure_profile,
+    refresh_retrieval_view,
+)
+from app.shared.domain.embedding import EmbeddingProfile, validate_vectors
 from app.shared.ports.vector_store import SearchHit, VectorPoint, VectorStore
 
 _SCHEMA = Path(__file__).with_name("schema.sql")
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
-# Postgres text-search configuration used for both indexing and querying. Must
-# match on both sides or lexemes won't line up.
 _TS_CONFIG = "english"
 
-# SQL translation of app.retrieval.rag.access.can_view, minus the two clauses handled
-# elsewhere: `scope='global'` is already in every WHERE below (it is what makes a
-# global document cross-tenant readable), and the admin case is short-circuited
-# by AccessFilter.sees_everything. Kept literally parallel to `can_view` so the
-# two are easy to diff by eye.
+
+def lexical_query(text: str) -> str:
+    if '"' in text or re.search(r"(?:^|\s)-\w|\bOR\b", text):
+        return text
+    return " OR ".join(re.findall(r"[\w]+(?:[-./][\w]+)*", text, flags=re.UNICODE))
+
+
+_ACTIVE = " AND (generation_id IS NULL OR EXISTS (SELECT 1 FROM documents d WHERE d.id=vector_chunks.document_id AND d.tenant_id=vector_chunks.tenant_id AND d.active_generation_id=vector_chunks.generation_id))"
+
 _ACL_SQL = (
     " AND (scope='global'"
     " OR payload->>'user_id'=%s"
@@ -67,16 +78,16 @@ def acl_pushdown(access) -> tuple[str, tuple]:
     if access is None:
         return "", ()
     clauses = ""
-    params: list = []
+    params: tuple = ()
     document_ids = getattr(access, "document_ids", None)
     if document_ids is not None:
-        clauses += " AND document_id = ANY(%s)"
-        params.append(list(document_ids))
-    if getattr(access, "sees_everything", False):
-        return clauses, tuple(params)
+        clauses = " AND document_id = ANY(%s)"
+        params = (sorted(document_ids),)
+    if getattr(access, "role", None) == "admin":
+        return clauses, params
     user_id = getattr(access, "user_id", None)
     if not user_id:
-        return clauses, tuple(params)
+        return clauses, params
     return clauses + _ACL_SQL, (*params, user_id, user_id)
 
 
@@ -85,38 +96,38 @@ class PgVectorStore(VectorStore):
     fused with GIN-indexed full-text lexical search."""
 
     def __init__(
-        self, dsn: str, dim: int,
-        candidate_multiplier: int = 4, min_candidates: int = 50,
-        hnsw_m: int = 16, hnsw_ef_construction: int = 64, hnsw_ef_search: int = 100,
+        self,
+        dsn: str,
+        dim: int,
+        candidate_multiplier: int = 4,
+        min_candidates: int = 50,
+        hnsw_m: int = 16,
+        hnsw_ef_construction: int = 64,
+        hnsw_ef_search: int = 100,
         lexical_only_cap: int = 10,
+        profile: EmbeddingProfile | None = None,
     ):
         """Bind to the Postgres database at `dsn`; `dim` is the embedding size."""
         self.dsn = dsn
         self.dim = dim
+        self.profile = profile
         self.candidate_multiplier = candidate_multiplier
         self.min_candidates = min_candidates
         self.hnsw_m = hnsw_m
         self.hnsw_ef_construction = hnsw_ef_construction
         self.hnsw_ef_search = hnsw_ef_search
-        # Max number of LEXICAL-ONLY candidates (FTS matches dense didn't surface)
-        # allowed into the fused pool, and only for lexical-leaning queries -- see
-        # the gate in search(). Bounds how much the lexical source can perturb a
-        # ranking that dense already covers well.
+
         self.lexical_only_cap = lexical_only_cap
 
     def ensure_collection(self, dim: int) -> None:
         """Create the `vector` extension and `vector_chunks` table/indexes if
         absent, or verify an existing table already matches `dim`."""
         self.dim = dim
-        try:
-            with transaction(self.dsn) as cur:
-                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        except psycopg2.errors.InsufficientPrivilege as e:
-            raise RuntimeError(
-                "CREATE EXTENSION vector requires superuser privilege; run "
-                "'CREATE EXTENSION vector;' once as a superuser against this "
-                "database, then retry."
-            ) from e
+        with transaction(self.dsn) as cur:
+            cur.execute("SELECT extversion FROM pg_extension WHERE extname='vector'")
+            extension = cur.fetchone()
+            if extension is None or tuple(map(int, extension["extversion"].split("."))) < (0, 8, 0):
+                raise RuntimeError("pgvector >= 0.8.0 must be installed before startup")
 
         with transaction(self.dsn) as cur:
             cur.execute("SELECT to_regclass('vector_chunks') AS reg")
@@ -135,49 +146,44 @@ class PgVectorStore(VectorStore):
                     )
             else:
                 ddl = _SCHEMA.read_text(encoding="utf-8").format(
-                    dim=dim, hnsw_m=self.hnsw_m,
+                    dim=dim,
+                    hnsw_m=self.hnsw_m,
                     hnsw_ef_construction=self.hnsw_ef_construction,
                 )
                 cur.execute(ddl)
 
             cur.execute("ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS tsv tsvector")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_vc_tsv "
-                        "ON vector_chunks USING gin (tsv)")
-
-    def reset_collection(self, dim: int) -> dict[str, int]:
-        """Clear ingested test data and recreate the vector table at `dim`."""
-        ddl = _SCHEMA.read_text(encoding="utf-8").format(
-            dim=dim,
-            hnsw_m=self.hnsw_m,
-            hnsw_ef_construction=self.hnsw_ef_construction,
-        )
-        with transaction(self.dsn) as cur:
-            cur.execute("SELECT COUNT(*) AS n FROM documents")
-            document_count = cur.fetchone()["n"]
-            cur.execute("SELECT COUNT(*) AS n FROM vector_chunks")
-            vector_count = cur.fetchone()["n"]
+            cur.execute("ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS generation_id TEXT")
             cur.execute(
-                "TRUNCATE TABLE job_events, chunks, ingestion_jobs, documents, vector_chunks"
+                "CREATE INDEX IF NOT EXISTS idx_vc_generation ON vector_chunks(generation_id)"
             )
-            cur.execute("DROP TABLE vector_chunks")
-            cur.execute(ddl)
-        self.dim = dim
-        return {"documents": document_count, "vectors": vector_count}
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_vc_tsv ON vector_chunks USING gin (tsv)")
+            if self.profile is None:
+                raise ValueError("An explicit embedding profile is required")
+            ensure_profile(cur, self.profile)
+            refresh_retrieval_view(cur)
 
     def upsert(self, points: list[VectorPoint]) -> None:
         """Insert or replace the given chunk points."""
         if not points:
             return
-        self.ensure_collection(len(points[0].vector))
+        validate_vectors([p.vector for p in points], len(points), self.dim)
         with transaction(self.dsn) as cur:
+            check_profile(cur, self.profile.id)
             for p in points:
+                cur.execute(
+                    "SELECT 1 FROM deleted_documents WHERE tenant_id=%s AND document_id=%s",
+                    (p.tenant_id, p.payload.get("_id", "")),
+                )
+                if cur.fetchone() is not None:
+                    raise ValueError("Deleted document cannot receive vectors")
                 if len(p.vector) != self.dim:
                     raise ValueError(f"vector dim {len(p.vector)} != collection dim {self.dim}")
-                # Same searchable text the localfs adapter feeds BM25: chunk
-                # content plus LLM-extracted topics/entities/author.
                 searchable = bm25.searchable_text(
-                    p.payload.get("content", ""), p.payload.get("topics"),
-                    p.payload.get("entities"), p.payload.get("author"),
+                    p.payload.get("content", ""),
+                    p.payload.get("topics"),
+                    p.payload.get("entities"),
+                    p.payload.get("author"),
                 )
                 cur.execute(
                     "INSERT INTO vector_chunks "
@@ -188,11 +194,21 @@ class PgVectorStore(VectorStore):
                     "ON CONFLICT (chunk_id) DO UPDATE SET "
                     "tenant_id=excluded.tenant_id, document_id=excluded.document_id, "
                     "scope=excluded.scope, deleted=false, embedding=excluded.embedding, "
-                    "payload=excluded.payload, tsv=excluded.tsv, updated_at=now()",
-                    (p.chunk_id, p.tenant_id, p.payload.get("_id", ""),
-                     p.payload.get("scope", "tenant"), p.vector, Json(p.payload),
-                     _TS_CONFIG, searchable),
+                    "payload=excluded.payload, tsv=excluded.tsv, updated_at=now() "
+                    "WHERE vector_chunks.generation_id IS NULL",
+                    (
+                        p.chunk_id,
+                        p.tenant_id,
+                        p.payload.get("_id", ""),
+                        p.payload.get("scope", "tenant"),
+                        p.vector,
+                        Json(p.payload),
+                        _TS_CONFIG,
+                        searchable,
+                    ),
                 )
+                if cur.rowcount != 1:
+                    raise ValueError("Published generation vectors are immutable")
 
     def delete_by_document(self, tenant_id: str, document_id: str) -> int:
         """Tombstone all chunks of a document; return the number removed."""
@@ -209,37 +225,150 @@ class PgVectorStore(VectorStore):
         """Number of non-deleted chunk rows for a tenant."""
         with transaction(self.dsn) as cur:
             cur.execute(
-                "SELECT COUNT(*) AS n FROM vector_chunks WHERE tenant_id=%s AND deleted=false",
+                "SELECT COUNT(*) AS n FROM retrieval_vectors vector_chunks WHERE tenant_id=%s AND deleted=false"
+                + _ACTIVE,
                 (tenant_id,),
             )
             n = cur.fetchone()["n"]
         return n
 
+    def validate_sources(self, tenant_id: str, chunk_ids: list[str], access=None) -> bool:
+        if not chunk_ids or len(set(chunk_ids)) != len(chunk_ids):
+            return False
+        acl, params = acl_pushdown(access)
+        with transaction(self.dsn) as cur:
+            check_profile(cur, self.profile.id)
+            cur.execute(
+                "SELECT chunk_id,payload FROM retrieval_vectors vector_chunks "
+                "WHERE deleted=false AND (tenant_id=%s OR scope='global') AND chunk_id=ANY(%s) "
+                + acl,
+                (tenant_id, chunk_ids, *params),
+            )
+            rows = cur.fetchall()
+        return len(rows) == len(chunk_ids) and all(
+            access is None or access(row["payload"]) for row in rows
+        )
+
+    def surrounding_chunks(self, tenant_id, chunk_ids, access=None, radius=2, limit=50):
+        """Read adjacent published evidence, never cross a source section boundary.
+
+        Join through the authoritative chunk ordinal, not the textual chunk ID.
+        Both anchors and neighbors use the live permission/publication view.
+        """
+        if not chunk_ids:
+            return []
+        acl, params = acl_pushdown(access)
+        with transaction(self.dsn) as cur:
+            check_profile(cur, self.profile.id)
+            cur.execute(
+                "WITH visible AS MATERIALIZED ("
+                "SELECT chunk_id,payload,document_id,tenant_id,generation_id FROM retrieval_vectors vector_chunks "
+                "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
+                + acl
+                + "), anchors AS (SELECT v.*,c.ordinal FROM visible v JOIN chunks c ON c.id=v.chunk_id "
+                "WHERE v.chunk_id=ANY(%s)) "
+                "SELECT v.chunk_id,v.payload,c.ordinal,min(abs(c.ordinal-a.ordinal)) AS distance "
+                "FROM anchors a JOIN chunks c ON c.document_id=a.document_id AND c.tenant_id=a.tenant_id "
+                "AND c.ordinal BETWEEN a.ordinal-%s AND a.ordinal+%s "
+                "JOIN visible v ON v.chunk_id=c.id AND v.generation_id IS NOT DISTINCT FROM a.generation_id "
+                "WHERE (v.payload->'meta'->>'section_path') IS NOT DISTINCT FROM "
+                "(a.payload->'meta'->>'section_path') "
+                "GROUP BY v.chunk_id,v.payload,c.ordinal ORDER BY distance,c.ordinal,v.chunk_id LIMIT %s",
+                (
+                    tenant_id,
+                    *params,
+                    chunk_ids,
+                    min(5, max(0, radius)),
+                    min(5, max(0, radius)),
+                    min(50, max(1, limit)),
+                ),
+            )
+            rows = cur.fetchall()
+        return [
+            self._hit(
+                row["chunk_id"],
+                0.0,
+                dict(row["payload"], source_ordinal=row["ordinal"]),
+                None,
+                None,
+                False,
+            )
+            for row in rows
+            if access is None or access(row["payload"])
+        ]
+
+    def collection_candidates(self, tenant_id, question, access=None):
+
+        acl, params = acl_pushdown(access)
+        with transaction(self.dsn) as cur:
+            check_profile(cur, self.profile.id)
+            rows = self._lexical_candidates(
+                cur, tenant_id, question, 200, acl + " AND payload->>'modality'='table'", params
+            )
+        return [
+            self._hit(
+                row["chunk_id"],
+                float(row["lex_score"]),
+                row["payload"],
+                None,
+                float(row["lex_score"]),
+                True,
+            )
+            for row in rows
+            if (access is None or access(row["payload"]))
+            and matching_roster(question, row["payload"].get("content", ""))
+        ][:20]
+
     def _dense_candidates(self, cur, tenant_id, query, pool_size, acl_sql="", acl_params=()):
         """HNSW nearest-neighbour candidates, ACL-filtered before the LIMIT."""
         cur.execute(
-            "SELECT chunk_id, payload, 1 - (embedding <=> %s::vector) AS dense_score "
-            "FROM vector_chunks "
+            "SELECT count(*) AS n FROM (SELECT 1 FROM retrieval_vectors vector_chunks "
             "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
-            + acl_sql +
-            " ORDER BY embedding <=> %s::vector LIMIT %s",
+            + _ACTIVE
+            + acl_sql
+            + " LIMIT 1001) eligible",
+            (tenant_id, *acl_params),
+        )
+        eligible = cur.fetchone()["n"]
+        cur.execute("SET LOCAL hnsw.iterative_scan='strict_order'")
+        cur.execute("SET LOCAL hnsw.max_scan_tuples=20000")
+        cur.execute("SET LOCAL hnsw.scan_mem_multiplier=2")
+        cur.execute(
+            "SELECT set_config('hnsw.ef_search',%s,true)",
+            (str(max(self.hnsw_ef_search, min(1000, pool_size * 40))),),
+        )
+        if eligible <= 1000:
+            cur.execute(
+                "WITH eligible AS MATERIALIZED (SELECT chunk_id,payload,embedding FROM retrieval_vectors vector_chunks "
+                "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
+                + _ACTIVE
+                + acl_sql
+                + ") SELECT chunk_id,payload,1-(embedding <=> %s::vector) AS dense_score FROM eligible "
+                "ORDER BY embedding <=> %s::vector,chunk_id LIMIT %s",
+                (tenant_id, *acl_params, query, query, pool_size),
+            )
+            return cur.fetchall()
+        cur.execute(
+            "SELECT chunk_id, payload, 1 - (embedding <=> %s::vector) AS dense_score "
+            "FROM retrieval_vectors vector_chunks "
+            "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
+            + _ACTIVE
+            + acl_sql
+            + " ORDER BY embedding <=> %s::vector LIMIT %s",
             (query, tenant_id, *acl_params, query, pool_size),
         )
         return cur.fetchall()
 
-    def _lexical_candidates(self, cur, tenant_id, query_text, pool_size,
-                            acl_sql="", acl_params=()):
+    def _lexical_candidates(self, cur, tenant_id, query_text, pool_size, acl_sql="", acl_params=()):
         """Independent lexical candidate list via full-text search, ranked by
         ts_rank_cd. Returns [] (not an error) when the query has no lexemes."""
         cur.execute(
             "SELECT chunk_id, payload, "
             "ts_rank_cd(tsv, q) AS lex_score "
-            "FROM vector_chunks, websearch_to_tsquery(%s, %s) AS q "
+            "FROM retrieval_vectors vector_chunks, websearch_to_tsquery(%s, %s) AS q "
             "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
-            "AND tsv @@ q "
-            + acl_sql +
-            " ORDER BY lex_score DESC LIMIT %s",
-            (_TS_CONFIG, query_text, tenant_id, *acl_params, pool_size),
+            "AND tsv @@ q " + _ACTIVE + acl_sql + " ORDER BY lex_score DESC, chunk_id LIMIT %s",
+            (_TS_CONFIG, lexical_query(query_text), tenant_id, *acl_params, pool_size),
         )
         return cur.fetchall()
 
@@ -248,48 +377,56 @@ class PgVectorStore(VectorStore):
         tenant_id: str,
         query: list[float],
         top_k: int = 5,
-        access: Optional[Callable[[dict], bool]] = None,
+        access: Callable[[dict], bool] | None = None,
         query_text: str = "",
     ) -> list[SearchHit]:
         """Tenant-scoped nearest-neighbour search, hybrid-fused with lexical
         full-text search when `query_text` is given.
 
-        Fetches top_k candidates from each independent channel (dense HNSW +
+        Fetches a wider pool from each independent channel (dense HNSW +
         lexical FTS), fuses with plain 50/50 reciprocal rank fusion, returns
         top_k. No query-adaptive weighting and no gated lexical-only
         injection: the cross-encoder reranker downstream is the precision
         arbiter, so every fused candidate is eligible and both channels count
-        equally. `candidate_multiplier`/`min_candidates`/`lexical_only_cap`
-        are retained on the constructor for config compatibility (and as a
-        ready lever to deepen per-channel fetch) but are intentionally not
-        used here. The visibility rule is pushed into BOTH candidate queries
+        equally. Channel depth is controlled by `candidate_multiplier` and
+        `min_candidates`, before fusion narrows to top_k. The visibility rule is pushed into BOTH candidate queries
         so each channel's LIMIT counts visible rows only -- see `acl_pushdown`.
         """
         acl_sql, acl_params = acl_pushdown(access)
+        validate_vectors([query], 1, self.dim)
+        pool_size = (
+            max(top_k, top_k * self.candidate_multiplier, self.min_candidates)
+            if query_text
+            else top_k
+        )
 
         with transaction(self.dsn) as cur:
-            # SET can't take a bind parameter; hnsw_ef_search is internal config,
-            # not user input, so an f-string is safe here.
+            check_profile(cur, self.profile.id)
+
             cur.execute(f"SET LOCAL hnsw.ef_search = {int(self.hnsw_ef_search)}")
             dense_rows = self._dense_candidates(
-                cur, tenant_id, query, top_k, acl_sql, acl_params)
+                cur, tenant_id, query, pool_size, acl_sql, acl_params
+            )
 
             lexical_rows = []
             if query_text:
+                cur.execute("SAVEPOINT lexical_search")
                 try:
                     lexical_rows = self._lexical_candidates(
-                        cur, tenant_id, query_text, top_k, acl_sql, acl_params)
+                        cur, tenant_id, query_text, pool_size, acl_sql, acl_params
+                    )
                 except psycopg2.Error as e:
-                    # A malformed tsquery or a pre-migration table must never break
-                    # the query -- degrade to dense-only ranking.
-                    log.warning("pgvector lexical search failed, dense-only", extra={
-                        "event": "pgvector_fts_failed", "error": str(e)[:200],
-                    })
+                    cur.execute("ROLLBACK TO SAVEPOINT lexical_search")
+                    log.warning(
+                        "pgvector lexical search failed, dense-only",
+                        extra={
+                            "event": "pgvector_fts_failed",
+                            "error": str(e)[:200],
+                        },
+                    )
+                finally:
+                    cur.execute("RELEASE SAVEPOINT lexical_search")
 
-        # Python-side filter, retained deliberately. `acl_pushdown` returns ""
-        # for a predicate it cannot translate, and `can_view` -- not the SQL
-        # mirror of it -- is the authority. Re-checking here means the two can
-        # never disagree in the permissive direction.
         def _visible(rows):
             out = []
             for r in rows:
@@ -303,19 +440,21 @@ class PgVectorStore(VectorStore):
         if not dense_rows and not lexical_rows:
             return []
 
-        # Pure-dense path (no query_text): preserve raw cosine as the score,
-        # exactly like the localfs adapter, so callers see the same semantics.
         if not query_text:
             hits = []
             for r in dense_rows[:top_k]:
-                hits.append(self._hit(r["chunk_id"], float(r["dense_score"]),
-                                      r["payload"], float(r["dense_score"]), None, False))
+                hits.append(
+                    self._hit(
+                        r["chunk_id"],
+                        float(r["dense_score"]),
+                        r["payload"],
+                        float(r["dense_score"]),
+                        None,
+                        False,
+                    )
+                )
             return hits
 
-        # Every candidate from either channel is eligible; a chunk found by both
-        # accumulates rank contributions from both (which is exactly why fusion
-        # beats either channel alone). Fusing on RANK POSITION (not raw score)
-        # sidesteps calibrating bounded cosine against unbounded ts_rank_cd.
         k = bm25.RRF_K
         payloads: dict[str, dict] = {}
         dense_score: dict[str, float] = {}
@@ -336,14 +475,22 @@ class PgVectorStore(VectorStore):
 
         ordered = sorted(fused, key=lambda c: fused[c], reverse=True)[:top_k]
         return [
-            self._hit(cid, float(fused[cid]), payloads[cid],
-                      dense_score.get(cid), lex_score.get(cid), True)
+            self._hit(
+                cid,
+                float(fused[cid]),
+                payloads[cid],
+                dense_score.get(cid),
+                lex_score.get(cid),
+                True,
+            )
             for cid in ordered
         ]
 
     @staticmethod
     def _hit(chunk_id, score, payload, dense, lex, hybrid) -> SearchHit:
         """Build a SearchHit from a row, exposing raw per-channel scores."""
+
+        source_type = payload.get("source_type")
         return SearchHit(
             chunk_id=chunk_id,
             score=score,
@@ -352,12 +499,17 @@ class PgVectorStore(VectorStore):
                 "modality": payload.get("modality"),
                 "content": payload.get("content"),
                 "location": payload.get("location", ""),
+                "section_path": (payload.get("meta") or {}).get("section_path"),
+                "source_ordinal": payload.get("source_ordinal"),
                 "filename": payload.get("filename"),
                 "user_id": payload.get("user_id"),
                 "visibility": payload.get("visibility"),
                 "acl_user_ids": payload.get("acl_user_ids", []),
                 "scope": payload.get("scope", "tenant"),
-                "source_type": payload.get("source_type"),
+                "source_type": source_type,
+                "generation_id": payload.get("generation_id"),
+                "version": payload.get("version"),
+                "provenance": citation_provenance(payload.get("meta"), source_type),
                 "topics": payload.get("topics", []),
                 "entities": payload.get("entities", []),
                 "author": payload.get("author"),

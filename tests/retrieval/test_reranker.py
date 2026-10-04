@@ -1,5 +1,6 @@
 """CrossEncoderReranker: the real ONNX cross-encoder runs for real (model is
 cached after first load, same as MiniLMEmbedder in test_embedder.py)."""
+
 from app.retrieval.adapters.rerankers.cross_encoder import CrossEncoderReranker
 
 

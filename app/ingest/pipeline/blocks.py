@@ -19,24 +19,19 @@ heading text (e.g. "Common Failure Pattern" repeated under 10 different topics i
 the same document -- a real case in our own corpus) are indistinguishable from
 each other once chunked; the full path disambiguates them.
 """
+
 from __future__ import annotations
 
 import re
 
-from app.shared.domain.models import Modality
 from app.ingest.pipeline.elements import Element
 from app.ingest.pipeline.tables import rows_to_markdown
+from app.shared.domain.models import Modality
 
-_SEP_RE = re.compile(r"\|\s*:?-{3,}")            # table header/body separator
+_SEP_RE = re.compile(r"\|\s*:?-{3,}")
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+\S")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
-# Cap how many levels deep an ancestor path gets before it's truncated (keep the
-# document title + the innermost levels, drop the noisy middle). The token
-# budget for this prefix is already accounted for dynamically wherever it's
-# used (chunker._reserve_for_prefix measures the real cost, doesn't guess), so
-# this cap is about readability/signal-to-noise for deeply nested documents,
-# not safety.
 _MAX_PATH_DEPTH = 4
 
 
@@ -61,38 +56,41 @@ def split_blocks(
     table_reason: str,
     text_modality: str = Modality.TEXT.value,
     meta: dict | None = None,
+    preserve_line_numbers: bool = False,
 ) -> list[Element]:
     base_meta = meta or {}
     lines = (text or "").splitlines()
     els: list[Element] = []
     order = 0
-    heading_stack: list[tuple[int, str]] = []  # [(level, heading_text), ...], outermost first
+    heading_stack: list[tuple[int, str]] = []
     prose: list[str] = []
+    prose_start = 1
     i, n = 0, len(lines)
 
     def path() -> str:
         levels = heading_stack
         if len(levels) > _MAX_PATH_DEPTH:
-            # keep the document title (outermost) + the innermost levels
-            levels = [levels[0]] + levels[-(_MAX_PATH_DEPTH - 1):]
+            levels = [levels[0]] + levels[-(_MAX_PATH_DEPTH - 1) :]
         return " > ".join(h for _, h in levels)
 
     def flush_prose() -> None:
-        nonlocal order
+        nonlocal order, prose_start
         t = "\n".join(prose).strip()
+        prose_end = prose_start + len(prose) - 1
         prose.clear()
         if t:
             emeta = dict(base_meta)
+            if preserve_line_numbers:
+                emeta.update(source_line_start=prose_start, source_line_end=prose_end)
             if heading_stack:
                 emeta["section_path"] = path()
-            els.append(Element(t, text_modality, text_extractor, text_reason,
-                               order, emeta))
+            els.append(Element(t, text_modality, text_extractor, text_reason, order, emeta))
             order += 1
+        prose_start = i + 1
 
     while i < n:
         line = lines[i]
 
-        # fenced code block -> atomic
         m = _FENCE_RE.match(line)
         if m:
             fence = m.group(1)
@@ -105,12 +103,28 @@ def split_blocks(
                 block.append(lines[i])
                 i += 1
             flush_prose()
-            els.append(Element("\n".join(block), text_modality, text_extractor,
-                               "code_block", order, dict(base_meta)))
+            els.append(
+                Element(
+                    "\n".join(block),
+                    text_modality,
+                    text_extractor,
+                    "code_block",
+                    order,
+                    {
+                        **base_meta,
+                        "section_path": path(),
+                        "block_type": "code",
+                        **(
+                            {"source_line_start": i - len(block) + 1, "source_line_end": i}
+                            if preserve_line_numbers
+                            else {}
+                        ),
+                    },
+                )
+            )
             order += 1
             continue
 
-        # GFM table: a "| ... |" row immediately followed by a separator row
         if "|" in line and i + 1 < n and _SEP_RE.search(lines[i + 1]):
             flush_prose()
             table = [line, lines[i + 1]]
@@ -120,24 +134,27 @@ def split_blocks(
                 i += 1
             md = "\n".join(table)
             tmeta = dict(base_meta)
+            if preserve_line_numbers:
+                tmeta.update(source_line_start=i - len(table) + 1, source_line_end=i)
             if heading_stack:
                 nearest = heading_stack[-1][1]
-                md = f"{nearest}\n{md}"          # caption for retrieval context (unchanged)
+                md = f"{nearest}\n{md}"
                 tmeta["section"] = nearest
                 tmeta["section_path"] = path()
-            els.append(Element(md, Modality.TABLE.value, table_extractor,
-                               table_reason, order, tmeta))
+            els.append(
+                Element(md, Modality.TABLE.value, table_extractor, table_reason, order, tmeta)
+            )
             order += 1
             continue
 
-        # Tab-separated table (e.g. pasted spreadsheet data, or an alternate
-        # vision-transcription format): 2+ consecutive lines with the same
-        # tab-delimited column count and at least 2 columns. Converted to GFM
-        # so every downstream consumer (chunker's header-repeat-on-split,
-        # section captions, ancestors-prefix) works unchanged regardless of
-        # the source format -- nothing downstream needs to know tabs exist.
         cols = _tab_columns(line)
-        if cols and cols >= 2 and i + 1 < n and _tab_columns(lines[i + 1]) == cols:
+        if (
+            cols
+            and cols >= 2
+            and i + 2 < n
+            and _tab_columns(lines[i + 1]) == cols
+            and _tab_columns(lines[i + 2]) == cols
+        ):
             flush_prose()
             tab_lines = [line]
             i += 1
@@ -147,23 +164,28 @@ def split_blocks(
             rows = [ln.split("\t") for ln in tab_lines]
             md = rows_to_markdown(rows)
             tmeta = dict(base_meta)
+            if preserve_line_numbers:
+                tmeta.update(source_line_start=i - len(tab_lines) + 1, source_line_end=i)
             if heading_stack:
                 nearest = heading_stack[-1][1]
                 md = f"{nearest}\n{md}"
                 tmeta["section"] = nearest
                 tmeta["section_path"] = path()
-            els.append(Element(md, Modality.TABLE.value, table_extractor,
-                               table_reason, order, tmeta))
+            els.append(
+                Element(md, Modality.TABLE.value, table_extractor, table_reason, order, tmeta)
+            )
             order += 1
             continue
 
         level = _heading_level(line)
         if level:
-            flush_prose()  # attribute everything so far to the OLD section path
+            flush_prose()
             while heading_stack and heading_stack[-1][0] >= level:
                 heading_stack.pop()
             heading_stack.append((level, line.strip()))
         prose.append(line)
+        if len(prose) == 1:
+            prose_start = i + 1
         i += 1
 
     flush_prose()
@@ -181,9 +203,13 @@ def _drop_redundant_heading_prose(els: list[Element]) -> list[Element]:
     out: list[Element] = []
     for idx, e in enumerate(els):
         nxt = els[idx + 1] if idx + 1 < len(els) else None
-        if (e.modality == Modality.TEXT.value and _is_heading_only(e.text)
-                and nxt is not None and nxt.modality == Modality.TABLE.value
-                and nxt.meta.get("section") == e.text.strip()):
+        if (
+            e.modality == Modality.TEXT.value
+            and _is_heading_only(e.text)
+            and nxt is not None
+            and nxt.modality == Modality.TABLE.value
+            and nxt.meta.get("section") == e.text.strip()
+        ):
             continue
         out.append(e)
     return out

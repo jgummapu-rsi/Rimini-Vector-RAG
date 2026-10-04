@@ -5,6 +5,7 @@ onnxruntime needs. The `msvc-runtime` pip package drops those DLLs into the venv
 we just have to make that directory discoverable before importing onnxruntime.
 Call `ensure_native_runtime()` before any onnxruntime import.
 """
+
 from __future__ import annotations
 
 import glob

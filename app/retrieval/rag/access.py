@@ -12,6 +12,7 @@ Tenant scoping is enforced separately (the store only ever loads one tenant's
 records, plus any scope=global records from other tenants); this adds the
 intra-tenant per-user filter.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,8 +30,9 @@ def can_view(payload: dict, user_id: str, role: str) -> bool:
         return True
     if payload.get("visibility") == Visibility.TENANT.value:
         return True
-    if (payload.get("visibility") == Visibility.SHARED.value
-            and user_id in (payload.get("acl_user_ids") or [])):
+    if payload.get("visibility") == Visibility.SHARED.value and user_id in (
+        payload.get("acl_user_ids") or []
+    ):
         return True
     return False
 
@@ -50,6 +52,7 @@ class AccessFilter:
     can get an empty result set while visible chunks exist just past the cut.
     Filtering before the LIMIT is what makes top-k mean "top k *visible*".
     """
+
     user_id: str
     role: str
     document_ids: frozenset[str] | None = None
@@ -67,9 +70,7 @@ class AccessFilter:
         return self.role == Role.ADMIN.value and self.document_ids is None
 
 
-def access_predicate(
-    principal: Principal, document_ids: list[str] | None = None
-) -> AccessFilter:
+def access_predicate(principal: Principal, document_ids: list[str] | None = None) -> AccessFilter:
     """Build the bound `AccessFilter` for a given principal."""
     selected = frozenset(document_ids) if document_ids is not None else None
     return AccessFilter(

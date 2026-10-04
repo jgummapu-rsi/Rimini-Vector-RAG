@@ -3,9 +3,12 @@
 Runs through the shared block splitter so any GFM tables inside a .txt/.rtf dump
 are treated as tables (consistent with markdown files), not buried in prose.
 """
+
 from __future__ import annotations
 
 import os
+
+from striprtf.striprtf import rtf_to_text
 
 from app.ingest.pipeline.blocks import split_blocks
 
@@ -14,11 +17,9 @@ def extract(data: bytes, filename: str, gateway, cfg) -> list:
     """Parse a text/rtf file into Elements (cfg unused: no images, no tables to cap)."""
     ext = os.path.splitext(filename or "")[1].lower()
     if ext == ".rtf":
-        from striprtf.striprtf import rtf_to_text
-
-        content = rtf_to_text(data.decode("utf-8", "ignore"))
+        content = rtf_to_text(data.decode("utf-8-sig"))
     else:
-        content = data.decode("utf-8", "ignore")
+        content = data.decode("utf-8-sig")
 
     content = content.strip()
     if not content:
@@ -29,4 +30,5 @@ def extract(data: bytes, filename: str, gateway, cfg) -> list:
         table_extractor="text_table",
         text_reason="text_layer",
         table_reason="structured_table",
+        preserve_line_numbers=True,
     )

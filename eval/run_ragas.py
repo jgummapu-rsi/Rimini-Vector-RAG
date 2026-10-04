@@ -10,6 +10,7 @@ Pipeline under test: ingest the corpus -> MiniLM embed -> knowledgebase retrieve
 Run:  python -m eval.run_ragas  [num_questions]
 Env:  RAGAS_JUDGE_MODEL (default claude-sonnet-5)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -30,18 +31,19 @@ from ragas.metrics import (
     ResponseRelevancy,
 )
 
-from app.shared.config import settings
+from app.ingest.pipeline.runner import run_job
+from app.retrieval.rag.query import answer_query
 from app.shared.container import build_container
 from app.shared.domain.models import Document, Job, JobStage, JobStatus, Role
 from app.shared.ids import new_object_id
-from app.ingest.pipeline.runner import run_job
-from app.retrieval.rag.query import answer_query
+from eval.storage import isolated_evaluation
 
 GOLDEN = Path(__file__).with_name("golden.json")
 
 
 class _MiniLMLangchain(Embeddings):
     """Adapt our MiniLM embedder to the langchain Embeddings interface."""
+
     def __init__(self, embedder):
         self._e = embedder
 
@@ -56,18 +58,34 @@ def _ingest_corpus(container, tenant_id, user_id, corpus_path: Path) -> None:
     data = corpus_path.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
     blob = container.blob.put(tenant_id, sha, corpus_path.suffix, data)
-    doc = Document(id=new_object_id(), tenant_id=tenant_id, owner_user_id=user_id,
-                   source_type="docx", blob_path=blob, content_sha256=sha,
-                   mime="text/markdown", filename=corpus_path.name,
-                   visibility="private", acl_user_ids=[])
+    doc = Document(
+        id=new_object_id(),
+        tenant_id=tenant_id,
+        owner_user_id=user_id,
+        source_type="docx",
+        blob_path=blob,
+        content_sha256=sha,
+        mime="text/markdown",
+        filename=corpus_path.name,
+        visibility="private",
+        acl_user_ids=[],
+    )
     container.metadata.create_document(doc)
-    container.metadata.create_job(Job(id=new_object_id(), document_id=doc.id,
-        tenant_id=tenant_id, stage=JobStage.PARSE.value,
-        status=JobStatus.QUEUED.value, attempts=0))
+    container.metadata.create_job(
+        Job(
+            id=new_object_id(),
+            document_id=doc.id,
+            tenant_id=tenant_id,
+            stage=JobStage.PARSE.value,
+            status=JobStatus.QUEUED.value,
+            attempts=0,
+        )
+    )
     run_job(container, container.queue.claim_next())
 
 
-def main() -> None:
+@isolated_evaluation
+def main(settings) -> None:
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
     judge_model = os.environ.get("RAGAS_JUDGE_MODEL", "claude-sonnet-5")
 
@@ -78,31 +96,36 @@ def main() -> None:
         corpus = Path.home() / spec["corpus_file"]
     print(f"corpus: {corpus}\nquestions: {len(qa)}\njudge: {judge_model}\n")
 
-    container = build_container()
+    container = build_container(settings)
     tid = container.metadata.create_tenant("RagasEval")
-    uid = container.metadata.create_user(tid, "eval@x.test", Role.ADMIN.value,
-                                         "sk-" + new_object_id())
+    uid = container.metadata.create_user(
+        tid, "eval@x.test", Role.ADMIN.value, "sk-" + new_object_id()
+    )
     _ingest_corpus(container, tid, uid, corpus)
     print(f"ingested corpus -> {container.vectors.count(tid)} vectors\n")
 
     samples = []
     for i, row in enumerate(qa, 1):
         r = answer_query(container, tid, row["question"], top_k=5)
-        samples.append({
-            "user_input": row["question"],
-            "retrieved_contexts": r.contexts,
-            "response": r.answer,
-            "reference": row["ground_truth"],
-        })
+        samples.append(
+            {
+                "user_input": row["question"],
+                "retrieved_contexts": r.contexts,
+                "response": r.answer,
+                "reference": row["ground_truth"],
+            }
+        )
         print(f"[{i}/{len(qa)}] {row['question'][:60]}")
     dataset = EvaluationDataset.from_list(samples)
 
-    judge = LangchainLLMWrapper(ChatOpenAI(
-        model=judge_model,
-        api_key=settings.litellm_api_key,
-        base_url=settings.litellm_base_url.rstrip("/") + "/v1",
-        temperature=0,
-    ))
+    judge = LangchainLLMWrapper(
+        ChatOpenAI(
+            model=judge_model,
+            api_key=settings.litellm_api_key,
+            base_url=settings.litellm_base_url.rstrip("/") + "/v1",
+            temperature=0,
+        )
+    )
     emb = LangchainEmbeddingsWrapper(_MiniLMLangchain(container.embedder))
 
     metrics = [

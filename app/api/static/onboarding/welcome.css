@@ -1,0 +1,77 @@
+/* The entry experience shares the workspace's brand palette and controls. */
+html { min-height: 100%; }
+body { min-height: 100vh; background: var(--white); }
+header.site { max-width: none; padding: 24px max(32px, calc((100vw - 1240px) / 2));
+  border-top: 3px solid var(--sol); border-bottom: 1px solid var(--gray-2); }
+.product { font-size: 16px; }
+.product small { display: block; margin-top: 2px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--gray-7); }
+.header-label { margin-left: auto; font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+  font-weight: 600; color: var(--gray-7); }
+main.shell { max-width: 1304px; padding: 76px 32px 64px; gap: 80px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 500px); align-items: start; }
+main.shell::before { display: none; }
+.intro { padding-top: 20px; }
+.intro .eyebrow { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+.intro .eyebrow::before { content: ''; width: 30px; height: 3px; background: var(--sol); }
+.intro h1 { max-width: 14ch; font-size: clamp(36px, 5vw, 58px); line-height: 1.06; }
+.intro h1 span { position: relative; display: inline-block; }
+.intro h1 span::after { content: ''; display: block; height: 4px; background: var(--sol); margin-top: 10px; }
+.intro .lede { font-size: 18px; margin-top: 28px; line-height: 1.65; max-width: 43ch; }
+.points { margin-top: 36px; gap: 20px; }
+.points li { border-left: 0; padding: 0 0 20px; border-bottom: 1px solid var(--gray-2); }
+.points li:last-child { border: 0; }
+.points b { margin-bottom: 5px; }
+.points span { font-size: 14.5px; line-height: 1.6; }
+.card { padding: 36px; box-shadow: var(--shadow); border-top: 3px solid var(--rs-black); }
+.card h2 { font-size: 32px; }
+.choice { gap: 14px; }
+.choicebtn { padding: 22px 18px; align-items: center; }
+.choicebtn small { font-size: 14.5px; }
+.choicebtn svg { width: 26px; height: 26px; }
+.choicebtn b { font-size: 18px; }
+.choice-arrow { margin-left: auto; flex: 0 0 auto; font-size: 22px; }
+.choicebtn.recommended { border-color: var(--rs-black); border-left: 3px solid var(--rs-black); }
+.note { background: var(--gray-1); margin-top: 24px; font-size: 14px; padding: 16px; }
+.btn { min-height: 46px; }
+.btn-primary { border-color: var(--rs-black); }
+.btn-primary:hover { background: var(--rs-black); color: var(--white); }
+input:focus { outline: 3px solid var(--teal); outline-offset: 2px; box-shadow: none; }
+.tabs { gap: 24px; }
+.tabs button { min-height: 48px; }
+.lbl { margin-top: 22px; }
+.tokenfield { flex-wrap: wrap; }
+.tokenfield code { overflow-wrap: anywhere; min-width: 0; }
+.portal-footer { width: 100%; max-width: 1240px; margin: auto auto 0; padding: 22px 0;
+  border-top: 1px solid var(--gray-2); display: flex; justify-content: space-between; gap: 20px;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--gray-7); font-weight: 600; }
+.skip { position: absolute; left: -9999px; top: 0; padding: 14px 20px; background: var(--rs-black);
+  color: var(--white); z-index: 100; }
+.skip:focus { left: 0; }
+@media (max-width: 1100px) {
+  main.shell { gap: 40px; grid-template-columns: minmax(0, 1fr) minmax(0, 460px); padding-top: 48px; }
+  .portal-footer { width: calc(100% - 64px); }
+}
+@media (max-width: 900px) {
+  main.shell { grid-template-columns: 1fr; max-width: 660px; gap: 36px; padding: 36px 24px 48px; }
+  .intro { padding: 0; }
+  .intro h1 { max-width: 14ch; }
+  .intro .lede { max-width: none; }
+  .points { display: none; }
+  .card { padding: 30px; }
+  .header-label { display: none; }
+}
+@media (max-width: 520px) {
+  header.site { padding: 18px 20px; gap: 12px; flex-wrap: nowrap; }
+  .logo { width: 104px; height: 28px; }
+  .product { font-size: 14px; }
+  main.shell { padding: 32px 20px; }
+  .intro .lede { font-size: 16px; }
+  .card { padding: 26px 22px; }
+  .card h2 { font-size: 28px; }
+  .choicebtn { padding: 18px 14px; }
+  .portal-footer { width: calc(100% - 40px); flex-direction: column; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

@@ -5,6 +5,7 @@ an unparseable response, an empty document — this returns the blank-default di
 rather than raising, so a metadata-extraction hiccup never fails the ingest job
 (the same graceful-degradation posture as query rewrite/decomposition elsewhere).
 """
+
 from __future__ import annotations
 
 import json
@@ -18,16 +19,21 @@ log = logging.getLogger("pipeline")
 
 TEXT_BUDGET_TOKENS = 3000
 
+_CHAR_HEADROOM_PER_TOKEN = 8
+
 _BLANK = {"author": None, "date": None, "topics": [], "entities": []}
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
 def _truncate_to_budget(text: str, max_tokens: int) -> str:
+
+    char_ceiling = max_tokens * _CHAR_HEADROOM_PER_TOKEN
+    if len(text) > char_ceiling:
+        text = text[:char_ceiling]
     if count_tokens(text) <= max_tokens:
         return text
-    # cheap, good-enough truncation: binary-search-free linear shrink by chars,
-    # proportional to the token/char ratio already observed.
+
     ratio = max_tokens / max(1, count_tokens(text))
     cut = max(1, int(len(text) * ratio))
     return text[:cut]
@@ -70,7 +76,11 @@ def extract_metadata(gateway, model: str, text: str) -> dict:
         raw = gateway.chat(messages, model=model, temperature=0)
         return _parse_response(raw)
     except Exception as e:  # noqa: BLE001 - deliberately broad: never fail the job
-        log.warning("metadata extraction failed, leaving blank", extra={
-            "event": "metadata_extract_failed", "error": str(e)[:200],
-        })
+        log.warning(
+            "metadata extraction failed, leaving blank",
+            extra={
+                "event": "metadata_extract_failed",
+                "error": str(e)[:200],
+            },
+        )
         return dict(_BLANK)
