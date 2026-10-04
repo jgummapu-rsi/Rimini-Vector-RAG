@@ -16,23 +16,22 @@ reorder/mangle the same words and watch the ranking move.
 
 Run:  python -m eval.query_paraphrase_probe
 """
+
 from __future__ import annotations
 
 import hashlib
 from itertools import combinations
 from pathlib import Path
 
+from app.retrieval.rag.query import _retrieve
 from app.shared.container import build_container
 from app.shared.domain.models import Role
 from app.shared.ids import new_object_id
-from app.retrieval.rag.query import _retrieve
 from eval.run_ragas import GOLDEN, _ingest_corpus
+from eval.storage import isolated_evaluation
 
 TOP_K = 3
 
-# Base question pulled from the real golden set (eval/golden.json), plus three
-# paraphrases that reorder/compress the exact same words -- mirrors the
-# "invoice details" / "details invoice" / "invoice me details" pattern.
 BASE_QUESTION = "How do you ingest documents into the built-in RAG store?"
 GROUND_TRUTH = "POST /v1/rag/ingest ingests documents into the built-in RAG store."
 VARIANTS = [
@@ -49,17 +48,24 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-def main() -> None:
+@isolated_evaluation
+def main(settings) -> None:
     corpus = Path(__file__).resolve().parents[2] / "litellm-gateway-api-docs.md"
     if not corpus.exists():
         corpus = Path.home() / "litellm-gateway-api-docs.md"
     if not corpus.exists():
-        spec_corpus = GOLDEN.read_text()  # surfaces a clear error if missing
-        raise FileNotFoundError(f"corpus file not found near {corpus}; check golden.json: {spec_corpus[:120]}")
+        spec_corpus = GOLDEN.read_text()
+        raise FileNotFoundError(
+            f"corpus file not found near {corpus}; check golden.json: {spec_corpus[:120]}"
+        )
 
-    container = build_container()
-    tid = container.metadata.create_tenant("paraphrase-probe-" + hashlib.sha1(str(corpus).encode()).hexdigest()[:8])
-    uid = container.metadata.create_user(tid, "probe@x.test", Role.ADMIN.value, "sk-" + new_object_id())
+    container = build_container(settings)
+    tid = container.metadata.create_tenant(
+        "paraphrase-probe-" + hashlib.sha1(str(corpus).encode()).hexdigest()[:8]
+    )
+    uid = container.metadata.create_user(
+        tid, "probe@x.test", Role.ADMIN.value, "sk-" + new_object_id()
+    )
     _ingest_corpus(container, tid, uid, corpus)
     print(f"ingested {corpus.name} -> {container.vectors.count(tid)} vectors\n")
 
@@ -75,23 +81,29 @@ def main() -> None:
             content = h.payload.get("content", "").replace("\n", " ")[:110]
             dense = h.payload.get("dense_score")
             bm25 = h.payload.get("bm25_score")
-            print(f"  #{rank}  fused={h.score:.4f}  dense={dense:.4f}  "
-                  f"bm25={bm25 if bm25 is None else round(bm25, 2)}  "
-                  f"chunk={h.chunk_id}")
+            print(
+                f"  #{rank}  fused={h.score:.4f}  dense={dense:.4f}  "
+                f"bm25={bm25 if bm25 is None else round(bm25, 2)}  "
+                f"chunk={h.chunk_id}"
+            )
             print(f"       {content}...")
 
     print("\n" + "=" * 100)
     print("PAIRWISE OVERLAP OF TOP-3 RETRIEVED CHUNKS (Jaccard similarity, 1.0 = identical set)\n")
-    labels = [l for l, _ in VARIANTS]
+    labels = [label for label, _ in VARIANTS]
     for a, b in combinations(labels, 2):
         set_a = {h.chunk_id for h in results[a]}
         set_b = {h.chunk_id for h in results[b]}
-        print(f"  {a:12} vs {b:12}  {_jaccard(set_a, set_b):.2f}   "
-              f"(top result same: {results[a][0].chunk_id == results[b][0].chunk_id if results[a] and results[b] else 'n/a'})")
+        print(
+            f"  {a:12} vs {b:12}  {_jaccard(set_a, set_b):.2f}   "
+            f"(top result same: {results[a][0].chunk_id == results[b][0].chunk_id if results[a] and results[b] else 'n/a'})"
+        )
 
-    print("\nTakeaway: identical intent, reworded -> the retrieved evidence set and its "
-          "ranking shift. Natural-language retrieval is an indeterministic weighing "
-          "over surface wording, not a lookup on meaning.")
+    print(
+        "\nTakeaway: identical intent, reworded -> the retrieved evidence set and its "
+        "ranking shift. Natural-language retrieval is an indeterministic weighing "
+        "over surface wording, not a lookup on meaning."
+    )
 
 
 if __name__ == "__main__":

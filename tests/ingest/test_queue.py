@@ -1,18 +1,37 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
+from app.ingest.ports.task_queue import RETRY_MAX_SECONDS, retry_delay_seconds
+from app.shared.adapters.postgres.db import transaction
 from app.shared.domain.models import Document, Job, JobStatus
 from app.shared.ids import new_object_id
-from app.ingest.ports.task_queue import RETRY_MAX_SECONDS, retry_delay_seconds
+from app.shared.ports.metadata_store import IngestionConflict
 
 
 def _seed_job(container, tenant):
-    doc = Document(id=new_object_id(), tenant_id=tenant["id"],
-                   owner_user_id=tenant["admin_id"], source_type="pdf",
-                   blob_path="/tmp/x", content_sha256=new_object_id(), mime="x",
-                   filename="x", visibility="private", acl_user_ids=[])
+    doc = Document(
+        id=new_object_id(),
+        tenant_id=tenant["id"],
+        owner_user_id=tenant["admin_id"],
+        source_type="pdf",
+        blob_path="/tmp/x",
+        content_sha256=new_object_id(),
+        mime="x",
+        filename="x",
+        visibility="private",
+        acl_user_ids=[],
+    )
     container.metadata.create_document(doc)
-    job = Job(id=new_object_id(), document_id=doc.id, tenant_id=tenant["id"],
-              stage="parse", status="queued", attempts=0)
+    job = Job(
+        id=new_object_id(),
+        document_id=doc.id,
+        tenant_id=tenant["id"],
+        stage="parse",
+        status="queued",
+        attempts=0,
+    )
     container.metadata.create_job(job)
     return job
 
@@ -29,34 +48,34 @@ def test_claim_marks_running_and_drains(container, tenant):
 def test_complete_sets_done(container, tenant):
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()
-    q.complete(job.id)
+    claimed = q.claim_next()
+    q.complete(job.id, claimed.lease_token)
     assert container.metadata.get_job(tenant["id"], job.id).status == "done"
 
 
 def test_retry_then_dead_letter(container, tenant):
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()
-    # max_attempts=3 in test settings
-    assert q.retry_or_dead(job.id, "boom", 3) == "queued"   # attempt 1
-    assert q.retry_or_dead(job.id, "boom", 3) == "queued"   # attempt 2
-    assert q.retry_or_dead(job.id, "boom", 3) == "dead"     # attempt 3 -> dead
+    for expected in ("queued", "queued", "dead"):
+        claimed = q.claim_next()
+        assert q.retry_or_dead(job.id, "boom", 3, claimed.lease_token) == expected
+        _expire_backoff(container, job.id)
     j = container.metadata.get_job(tenant["id"], job.id)
     assert j.status == "dead" and j.attempts == 3 and j.error
 
 
-# ------------------------------------------------------------- backoff --
-# A failed job used to go straight back to `queued` and be re-claimable
-# instantly, so a document that always fails burned every attempt -- and every
-# LLM gateway call those attempts make -- in milliseconds. The delay lives on
-# the ROW, not in the worker's sleep, because a sleeping worker doesn't stop a
-# second worker from grabbing the same job immediately.
-
-
-@pytest.mark.parametrize("attempts,expected", [
-    (1, 2), (2, 4), (3, 8), (4, 16), (5, 32), (6, 60), (99, 60),
-])
+@pytest.mark.parametrize(
+    "attempts,expected",
+    [
+        (1, 2),
+        (2, 4),
+        (3, 8),
+        (4, 16),
+        (5, 32),
+        (6, 60),
+        (99, 60),
+    ],
+)
 def test_retry_delay_doubles_then_caps(attempts, expected):
     assert retry_delay_seconds(attempts) == expected
     assert retry_delay_seconds(attempts) <= RETRY_MAX_SECONDS
@@ -72,11 +91,11 @@ def test_failed_job_is_not_immediately_reclaimable(container, tenant):
     claim_next() picked it straight back up."""
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()
+    claimed = q.claim_next()
 
-    assert q.retry_or_dead(job.id, "boom", 5) == "queued"
+    assert q.retry_or_dead(job.id, "boom", 5, claimed.lease_token) == "queued"
     assert container.metadata.get_job(tenant["id"], job.id).status == "queued"
-    # queued, but held back -- so there is nothing to claim right now
+
     assert q.claim_next() is None
 
 
@@ -85,8 +104,8 @@ def test_backoff_expiry_makes_the_job_claimable_again(container, tenant):
     a dead-letter."""
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()
-    q.retry_or_dead(job.id, "boom", 5)
+    claimed = q.claim_next()
+    q.retry_or_dead(job.id, "boom", 5, claimed.lease_token)
     assert q.claim_next() is None
 
     _expire_backoff(container, job.id)
@@ -100,53 +119,48 @@ def test_enqueue_clears_an_active_backoff(container, tenant):
     not inherit a delay left over from an earlier failure."""
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()
-    q.retry_or_dead(job.id, "boom", 5)
-    assert q.claim_next() is None        # backing off
+    claimed = q.claim_next()
+    q.retry_or_dead(job.id, "boom", 5, claimed.lease_token)
+    assert q.claim_next() is None
 
     q.enqueue(job.id)
-    assert q.claim_next() is not None    # available again immediately
+    assert q.claim_next() is not None
 
 
 def test_dead_job_is_never_claimed_regardless_of_backoff(container, tenant):
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()
-    assert q.retry_or_dead(job.id, "boom", 1) == "dead"
+    claimed = q.claim_next()
+    assert q.retry_or_dead(job.id, "boom", 1, claimed.lease_token) == "dead"
     _expire_backoff(container, job.id)
-    assert q.claim_next() is None        # dead-lettered, not retried
+    assert q.claim_next() is None
 
 
 def _expire_backoff(container, job_id: str) -> None:
     """Fast-forward past a job's retry delay instead of sleeping for it."""
-    from app.shared.adapters.sqlite.db import transaction
-    with transaction(container.settings.sqlite_path) as c:
-        c.execute("UPDATE ingestion_jobs SET available_at=datetime('now','-1 hour') "
-                  "WHERE id=?", (job_id,))
-
-
-# ------------------------------------------------------ stuck-job reaper --
-# A worker that crashes (or is killed) mid-job leaves its claimed row
-# `running` forever -- nothing else ever re-selects a `running` row. The
-# reaper reclaims a job once its lease (set at claim time) expires.
+    with transaction(container.settings.postgres_dsn) as c:
+        c.execute(
+            "UPDATE ingestion_jobs SET available_at=now() - interval '1 hour' WHERE id=%s",
+            (job_id,),
+        )
 
 
 def _expire_lease(container, job_id: str) -> None:
     """Fast-forward past a job's lease instead of waiting JOB_LEASE_SECONDS."""
-    from app.shared.adapters.sqlite.db import transaction
-    with transaction(container.settings.sqlite_path) as c:
-        c.execute("UPDATE ingestion_jobs SET lease_expires_at=datetime('now','-1 hour') "
-                  "WHERE id=?", (job_id,))
+    with transaction(container.settings.postgres_dsn) as c:
+        c.execute(
+            "UPDATE ingestion_jobs SET lease_expires_at=now() - interval '1 hour' WHERE id=%s",
+            (job_id,),
+        )
 
 
 def test_claim_next_sets_a_future_lease(container, tenant):
-    from app.shared.adapters.sqlite.db import transaction
     q = container.queue
     job = _seed_job(container, tenant)
     q.claim_next()
-    with transaction(container.settings.sqlite_path) as c:
-        row = c.execute("SELECT lease_expires_at FROM ingestion_jobs WHERE id=?",
-                         (job.id,)).fetchone()
+    with transaction(container.settings.postgres_dsn) as c:
+        c.execute("SELECT lease_expires_at FROM ingestion_jobs WHERE id=%s", (job.id,))
+        row = c.fetchone()
     assert row["lease_expires_at"] is not None
 
 
@@ -160,7 +174,7 @@ def test_reap_expired_reclaims_a_stuck_job(container, tenant):
     assert reclaimed == 1
     j = container.metadata.get_job(tenant["id"], job.id)
     assert j.status == "queued" and j.attempts == 1
-    # held back by the same backoff schedule as a normal failure
+
     assert q.claim_next() is None
 
 
@@ -178,7 +192,7 @@ def test_reap_expired_dead_letters_after_max_attempts(container, tenant):
 def test_reap_expired_ignores_jobs_still_within_their_lease(container, tenant):
     q = container.queue
     job = _seed_job(container, tenant)
-    q.claim_next()  # lease starts now, far from expired
+    q.claim_next()
 
     assert q.reap_expired(max_attempts=5) == 0
     j = container.metadata.get_job(tenant["id"], job.id)
@@ -191,3 +205,56 @@ def test_reap_expired_ignores_queued_jobs(container, tenant):
     q = container.queue
     _seed_job(container, tenant)
     assert q.reap_expired(max_attempts=5) == 0
+
+
+def test_concurrent_update_and_reprocess_accept_exactly_one(container, tenant):
+    document = Document(
+        new_object_id(),
+        tenant["id"],
+        tenant["admin_id"],
+        "text",
+        "old",
+        "old-hash",
+        "text/plain",
+        "file.txt",
+        "private",
+        [],
+    )
+    container.metadata.create_document(document)
+    barrier = Barrier(2)
+
+    def enqueue(update):
+        job = Job(new_object_id(), document.id, tenant["id"], "parse", "queued", 0)
+        barrier.wait()
+        try:
+            if update:
+                container.metadata.update_document_content_and_queue(
+                    tenant["id"],
+                    document.id,
+                    blob_path="new",
+                    content_sha256="new-hash",
+                    mime="text/plain",
+                    source_type="text",
+                    filename="file.txt",
+                    visibility="private",
+                    scope="tenant",
+                    job=job,
+                    uploaded_by=tenant["admin_id"],
+                    byte_size=3,
+                )
+            else:
+                container.metadata.create_job(job)
+            return update, True
+        except IngestionConflict:
+            return update, False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(enqueue, [True, False]))
+    assert sum(accepted for _, accepted in results) == 1
+    update_won = any(update and accepted for update, accepted in results)
+    current = container.metadata.get_document(tenant["id"], document.id)
+    assert current.version == (2 if update_won else 1)
+    assert current.content_sha256 == ("new-hash" if update_won else "old-hash")
+    assert len(container.metadata.list_document_versions(tenant["id"], document.id)) == int(
+        update_won
+    )

@@ -3,13 +3,11 @@ unauthenticated endpoints (onboarding login/register) that have no other
 throttle in front of them yet.
 
 This is deliberately simple and in-memory: it resets on process restart and
-does not coordinate across multiple API processes/replicas. That matches this
-deployment's current single-API-process assumption (see the pool-sizing note
-in app.shared.adapters.postgres.db) -- once horizontal API scaling is real
-(CLAUDE.md roadmap item 13), this should move to a shared store (e.g. Redis)
-so every replica enforces the same limit, or the limit should move to the
-ingress/API-gateway layer instead (roadmap item 5).
+does not coordinate across multiple API processes/replicas. Shared Redis admission
+controls protect authenticated requests separately. Deployments requiring a global
+login/signup limit need shared or ingress-layer limits for those endpoints too.
 """
+
 from __future__ import annotations
 
 import threading
@@ -50,10 +48,6 @@ class RateLimiter:
                 while dq and now - dq[0] > self._window:
                     dq.popleft()
                 if not dq:
-                    # Fully expired -- drop the entry instead of leaving an
-                    # empty deque behind, so a long-running process doesn't
-                    # accumulate one dict entry per distinct key ever seen
-                    # (email/IP) for as long as it stays up.
                     del self._hits[key]
                     dq = None
             if dq is None:

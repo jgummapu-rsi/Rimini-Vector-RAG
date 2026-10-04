@@ -3,23 +3,21 @@
 Used for every *structured* table source: CSV, Excel sheets, DOCX tables, and
 PDF text-layer tables. The LLM is only involved when a table exists as an image.
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
+
+import pandas as pd
 
 
 def _esc(value: Any) -> str:
     if value is None:
         return ""
     s = str(value)
-    return (
-        s.replace("\\", "\\\\")
-        .replace("|", "\\|")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .strip()
-    )
+    return s.replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
 
 
 def rows_to_markdown(rows: Sequence[Sequence[Any]]) -> str:
@@ -46,7 +44,6 @@ def rows_to_markdown(rows: Sequence[Sequence[Any]]) -> str:
 
 def df_to_markdown(df) -> str:
     """pandas DataFrame -> markdown (columns become the header row)."""
-    import pandas as pd
 
     df = df.where(pd.notna(df), "")
     header = [_esc(c) for c in df.columns]

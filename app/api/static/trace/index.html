@@ -18,7 +18,7 @@
   the header, not tabs bolted onto one view.
 
   ============================================================================
-  THEME — Rimini Street Brand Style Guide (docs/style_guide.md), applied literally.
+  THEME — Rimini Street Brand Style Guide, applied literally.
   ============================================================================
   The four governing rules and how this file obeys them:
 
@@ -62,12 +62,28 @@
   Citation scores are deliberately not shown (raw retrieval-score units aren't
   legible to a general reader); rank order (#1, #2, ...) already conveys
   most-to-least relevant.
+
+  VERSION MARKS.  The `v2` pill is --gray-1/--gray-8, NOT a status color: a
+  version number identifies, it doesn't report an outcome, and the §2.4 status
+  palette has to stay readable as job state. The "v" prefix is part of the
+  label so the pill still means something in greyscale (§9), and it is hidden
+  entirely at v1 -- a badge every document carries conveys nothing. The one
+  status color in the history block is "Searchable now", which IS a state.
+
+  Added/removed counts always carry a sign AND the word ("+5 added"), never a
+  bare colored number: green vs red are CVD-indistinguishable, same reasoning
+  as the stage-status marks above.
+
+  Note the version stamp deliberately does NOT reuse the `Date` chip in "What
+  the document is about". That chip is the date a language model extracted from
+  the document's CONTENT; this is when the file was last re-uploaded. Two
+  different facts that happen to both be dates.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Document Trace</title>
+<title>Knowledge workspace — Agentic AI</title>
 <style>
 /* ==========================================================================
    TOKENS — verbatim from the Rimini Street Brand Style Guide
@@ -508,6 +524,38 @@ td.num  { text-align: right; font-variant-numeric: tabular-nums; }
 #askform .btn { width: 100%; }
 #askform .hint { font-size: 14px; color: var(--gray-7); margin: 0; }
 
+/* Content-version marker. Neutral by design: a version number is an identifier,
+   not a status, so it takes --gray-1/--gray-8 rather than one of the §2.4
+   status colors — those are reserved for job outcome and must stay legible as
+   such. The "v" prefix is part of the label, so the meaning survives with no
+   color at all (§9). */
+.vpill { font-size: 11px; font-weight: 700; letter-spacing: var(--track-eyebrow);
+         padding: 3px 9px; border-radius: var(--radius-pill); flex: 0 0 auto;
+         white-space: nowrap; background: var(--gray-1); color: var(--gray-8);
+         border: 1px solid var(--gray-2); }
+
+/* Version history rows. +added / -removed carry a sign AND a word, never a bare
+   colored number: §9 forbids color as the sole carrier, and green vs red are
+   CVD-indistinguishable for a large minority of readers. */
+.vrow { padding: 14px 0; border-bottom: 1px solid var(--gray-2); }
+.vrow:last-child { border-bottom: 0; }
+.vhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vhead .vwhen { font-size: 14px; color: var(--gray-7); }
+.vcur { font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: var(--track-eyebrow); padding: 3px 9px;
+        border-radius: var(--radius-pill); white-space: nowrap;
+        background: var(--status-green-bg); color: var(--status-green); }
+.vdelta { margin: 8px 0 0; font-size: 14px; color: var(--gray-8); }
+.vdelta .n { font-weight: 700; font-variant-numeric: tabular-nums; }
+.vdelta .sep { color: var(--gray-6); margin: 0 8px; }
+.vprev { margin: 10px 0 0; padding: 0 0 0 14px; border-left: 2px solid var(--gray-2);
+         list-style: none; }
+.vprev li { font-size: 14px; color: var(--gray-7); margin: 0 0 5px;
+            overflow-wrap: anywhere; }
+.vprev .tag { font-size: 11px; font-weight: 700; text-transform: uppercase;
+              letter-spacing: var(--track-eyebrow); color: var(--gray-8);
+              margin-right: 7px; }
+
 /* Cache / Live / General — the text label IS the identity, never color alone. */
 .asktag { font-size: 11px; font-weight: 700; text-transform: uppercase;
           letter-spacing: var(--track-eyebrow); padding: 3px 9px;
@@ -570,6 +618,101 @@ td.num  { text-align: right; font-variant-numeric: tabular-nums; }
   background: none; border: 0; padding: 0; font-family: inherit;
 }
 .citation .jump:hover { text-decoration: underline; }
+.citation .actions { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap;
+                     margin-top: 12px; }
+.citation .actions .jump { margin-top: 0; }
+
+/* ============================================================= SOURCE VIEWER
+   The original bytes stay in a browser-native viewer. PDF provenance is
+   described alongside it because the native PDF plug-in cannot draw our
+   bounding boxes. Extracted formats use the same plain-text treatment as the
+   rest of this page; source HTML is never inserted into this document. */
+dialog.source-dialog {
+  width: min(1120px, calc(100vw - 40px)); height: min(860px, calc(100vh - 40px));
+  max-width: none; max-height: none; padding: 0; overflow: hidden;
+  border: 1px solid var(--gray-3); border-radius: var(--radius);
+  background: var(--white); color: var(--rs-black); box-shadow: var(--shadow-lg);
+}
+dialog.source-dialog::backdrop { background: rgba(22,22,22,.68); }
+.source-shell { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.source-head { display: flex; align-items: flex-start; gap: 18px; padding: 18px 20px;
+               border-bottom: 1px solid var(--gray-2); background: var(--white); }
+.source-head .grow { flex: 1; min-width: 0; }
+.source-head h2 { font-size: 22px; }
+.source-head .meta { margin: 5px 0 0; overflow-wrap: anywhere; }
+.source-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.source-body { flex: 1; min-height: 0; overflow: auto; padding: 18px 20px 22px;
+               background: var(--gray-1); }
+.source-loading { height: 100%; min-height: 220px; display: grid; place-items: center;
+                  color: var(--gray-7); text-align: center; }
+.source-preview { height: 100%; min-height: 420px; display: flex; flex-direction: column; gap: 14px; }
+.source-native { width: 100%; min-height: 480px; flex: 1; border: 1px solid var(--gray-3);
+                 border-radius: var(--radius); background: var(--white); }
+.source-image { display: block; max-width: 100%; max-height: calc(100vh - 230px);
+                margin: auto; object-fit: contain; border: 1px solid var(--gray-2);
+                 border-radius: var(--radius); background: var(--white); }
+.source-pdf-page { position: relative; align-self: center; max-width: 100%; line-height: 0;
+                   border: 1px solid var(--gray-3); background: var(--white); box-shadow: var(--shadow); }
+.source-pdf-page img { display: block; max-width: 100%; height: auto; }
+.source-region { position: absolute; border: 0; background: rgba(255,199,44,.27);
+                 box-shadow: inset 0 -2px 0 #e4a400; pointer-events: none; }
+.source-region.first { border-top: 2px solid #e4a400; border-radius: 5px 5px 0 0; }
+.source-region.last { border-bottom: 2px solid #e4a400; border-radius: 0 0 5px 5px; }
+.source-region.only { border: 2px solid #e4a400; border-radius: 5px; }
+.source-region.approximate { background: rgba(212,0,0,.08); outline: 2px dashed #d40000;
+                             box-shadow: none; }
+.inline-source { margin: 16px 0 24px; border: 1px solid var(--gray-3); border-radius: var(--radius);
+                 background: var(--white); overflow: hidden; box-shadow: var(--shadow); }
+.inline-source header { padding: 14px 18px; display: flex; gap: 12px; align-items: center;
+                        flex-wrap: wrap; border-bottom: 1px solid var(--gray-2); }
+.inline-source header .grow { flex: 1; min-width: 180px; }
+.inline-source h3 { font-size: 16px; margin: 0; overflow-wrap: anywhere; }
+.inline-source .meta { margin: 4px 0 0; font-size: 13px; }
+.inline-source select { max-width: 100%; font: inherit; padding: 6px; }
+.inline-preview { max-height: 540px; overflow: auto; padding: 18px; background: var(--gray-1);
+                  overscroll-behavior: contain; }
+.inline-preview .source-text { min-height: 0; font-family: inherit; line-height: 1.65; }
+.inline-preview .source-pdf-page { width: 100%; border: 0; }
+.inline-preview .source-pdf-page img { width: 100%; }
+.passage-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.passage-overlay rect { fill: rgba(255,199,44,.12); stroke: #c89200; stroke-width: 1.5;
+                        vector-effect: non-scaling-stroke; }
+.passage-overlay.approximate rect { stroke-dasharray: 5 3; }
+.passage-overlay rect.approximate { stroke-dasharray: 5 3; }
+.source-selection { background: #fff1bb; color: inherit; border: 1px solid #c89200;
+                    border-radius: 3px; padding: 1px 2px; box-decoration-break: clone; }
+.inline-quote { margin: 0; padding: 12px 18px; border-top: 1px solid var(--gray-2);
+                font-size: 14px; color: var(--gray-7); white-space: pre-wrap; overflow-wrap: anywhere; }
+.source-pages { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; }
+.source-text { margin: 0; padding: 18px; min-height: 100%; overflow: auto;
+               border: 1px solid var(--gray-2); border-radius: var(--radius);
+               background: var(--white); color: var(--rs-black); white-space: pre-wrap;
+               overflow-wrap: anywhere; font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.source-note { padding: 13px 15px; border: 1px solid var(--gray-2);
+               border-left: 3px solid var(--rs-black); border-radius: var(--radius);
+               background: var(--white); font-size: 14.5px; color: var(--gray-7); }
+.source-note b { color: var(--rs-black); }
+.source-fallback-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap;
+                        margin-bottom: 14px; }
+.source-fallback-head .grow { flex: 1; min-width: 220px; }
+.source-fallback-head p { margin: 4px 0 0; color: var(--gray-7); }
+.source-chunk { padding: 16px 18px; margin-bottom: 10px; border: 1px solid var(--gray-2);
+                border-radius: var(--radius); background: var(--white); }
+.source-chunk.cited { border-left: 4px solid var(--sol); box-shadow: var(--shadow); }
+.source-chunk .meta { margin: 0 0 8px; }
+.source-chunk pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+                    font: inherit; color: var(--gray-7); }
+body.modal-open { overflow: hidden; }
+
+@media (max-width: 700px) {
+  dialog.source-dialog { width: 100vw; height: 100dvh; max-height: none;
+                         border: 0; border-radius: 0; }
+  .source-head { padding: 14px; gap: 10px; }
+  .source-head h2 { font-size: 19px; }
+  .source-actions .btn { padding: 8px 10px; }
+  .source-body { padding: 12px; }
+  .source-native { min-height: 360px; }
+}
 
 /* ==========================================================================
    GATE — approved gradient #1, Sol -> White. Body text sits on the white card,
@@ -627,6 +770,8 @@ td.num  { text-align: right; font-variant-numeric: tabular-nums; }
   }
 }
 </style>
+<link rel="stylesheet" href="/ui/portal.css">
+<link rel="stylesheet" href="/ui/glass.css">
 </head>
 <body>
 
@@ -637,34 +782,38 @@ td.num  { text-align: right; font-variant-numeric: tabular-nums; }
        divider and the product name only. -->
   <span class="logo" role="img" aria-label="Rimini Street"></span>
   <span class="hdivider" aria-hidden="true"></span>
-  <span class="product">Agentic AI Knowledge Base</span>
+  <span class="product">Agentic AI™<small>Knowledge workspace</small></span>
 
   <nav class="mainnav" id="navrail" aria-label="Primary" hidden>
-    <button class="navitem active" id="navIngest" type="button">Ingest</button>
-    <button class="navitem" id="navAsk" type="button">Ask</button>
+    <button class="navitem active" id="navIngest" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M4 4h6l2 3h8v13H4z"/></svg>Library</button>
+    <button class="navitem" id="navAsk" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg>Ask</button>
+    <button class="navitem" id="navTeam" type="button" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 13a5 5 0 0 1 3 5v3"/></svg>Team</button>
   </nav>
 
   <span class="sp"></span>
+  <div class="account-label" id="accountLabel" hidden><strong id="organizationName"></strong><span id="accountRole"></span></div>
   <button class="btn btn-sm" id="refresh" type="button">Refresh</button>
   <button class="btn btn-sm" id="signout" type="button">Sign out</button>
 </header>
 
 <div class="pagehead" id="pagehead" hidden>
-  <p class="eyebrow" id="pageEyebrow">Ingestion</p>
-  <h1 id="pageTitle">Document trace</h1>
-  <p class="lede" id="pageSub">Watch a document become searchable knowledge — every step, and why.</p>
+  <p class="eyebrow" id="pageEyebrow">Your workspace</p>
+  <div class="pagehead-row"><div>
+    <h1 id="pageTitle">Knowledge library</h1>
+    <p class="lede" id="pageSub">Bring your documents together. Make every insight discoverable.</p>
+  </div><span class="workspace-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Organization-scoped access</span></div>
 </div>
 
 <div id="gate" hidden>
   <div class="gatecard">
-    <p class="eyebrow">Access</p>
-    <h2>Enter your API token</h2>
-    <p>Paste the bearer token printed by <code>python -m scripts.seed</code>, or the one the
-       onboarding page issued you. It is stored in this browser only, and sent to this
-       service alone.</p>
+    <p class="eyebrow">Welcome to your workspace</p>
+    <h2>Pick up where you left off.</h2>
+    <p>Sign in with your email and password to open your organization's workspace.</p>
+    <a class="btn btn-primary" href="/">Go to sign in</a>
+    <p>Connecting with the API? Enter your access token below.</p>
     <label class="sr" for="tok">API token</label>
     <input id="tok" type="password" placeholder="rs_9f3c1a7e2b8d4f60a1c5e93b" autocomplete="off">
-    <button class="btn btn-primary" id="save" type="button">Continue</button>
+    <button class="btn" id="save" type="button">Connect with token</button>
     <p id="gateerr" role="alert"></p>
   </div>
 </div>
@@ -673,61 +822,140 @@ td.num  { text-align: right; font-variant-numeric: tabular-nums; }
   <main id="maincontent">
     <div class="layout" id="docsLayout">
       <aside class="side" aria-label="Documents">
+        <div class="side-title"><h2>Your documents</h2><span class="count" id="documentCount" aria-label="Loaded document count">—</span></div>
         <div id="drop" role="button" tabindex="0" aria-label="Drop a document, or click to choose a file">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"
                stroke-linejoin="round" aria-hidden="true" focusable="false">
             <path d="M12 16V4"/><path d="M7 9l5-5 5 5"/>
             <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
           </svg>
-          <b>Drop a document</b>
-          <small>or click to choose — pdf, docx, md, txt, csv, xlsx, images</small>
+          <b>Add to your knowledge</b>
+          <small>Drop files here or browse<br>PDF, Word, spreadsheets, text &amp; images</small>
           <input id="file" type="file" hidden multiple>
         </div>
         <div class="field">
-          <label for="scope">Scope</label>
+          <label for="scope">Workspace</label>
           <select id="scope">
-            <option value="tenant" selected>Tenant — only your organization</option>
-            <option value="global">Global — every tenant (platform admin only)</option>
+            <option value="tenant" selected>Your organization</option>
+            <option value="global" id="globalScope" hidden>All organizations (platform operator)</option>
           </select>
         </div>
-        <h2 class="listhead">Ingested documents</h2>
+        <div class="field" id="visibilityField"><label for="visibility">Document access</label><select id="visibility"><option value="private">Only me</option><option value="tenant">Everyone in my organization</option></select></div>
+        <div class="field search-field"><label for="documentSearch">Find a document</label><input id="documentSearch" type="search" placeholder="Quarterly review" autocomplete="off"></div>
+        <h2 class="listhead">Document library</h2>
         <div id="list"></div>
       </aside>
       <div class="main"><div class="wrap" id="detail">
-        <div class="empty">
-          <b>Nothing selected</b>
-          Drop a document on the left, or pick one you have already ingested.
-        </div>
+        <section class="welcome-panel" id="libraryWelcome">
+          <div class="welcome-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6"/></svg></div>
+          <p class="eyebrow">A foundation for better answers</p>
+          <h2>Your next insight is already in your documents.</h2>
+          <p>Add a document to get started, or select one from your library to explore its sources, processing history, and searchable content.</p>
+          <div class="panel-actions"><button class="btn btn-primary" id="welcomeUpload" type="button">Add a document</button><button class="btn" id="welcomeAsk" type="button">Ask a question</button></div>
+          <div class="workflow">
+            <div><span class="step">01 / CONNECT</span><h3>Bring your knowledge</h3><p>Upload the files your team relies on.</p></div>
+            <div><span class="step">02 / DISCOVER</span><h3>Find the meaning</h3><p>Content becomes searchable, with its context intact.</p></div>
+            <div><span class="step">03 / UNDERSTAND</span><h3>Follow the evidence</h3><p>Ask questions and explore the original sources.</p></div>
+          </div>
+        </section>
       </div></div>
     </div>
 
     <div class="layout" id="askLayout" hidden>
-      <aside class="side" aria-label="Ask">
-        <div id="askform">
-          <div>
-            <label for="askq">Ask a question</label>
-            <textarea id="askq" rows="4"
-              placeholder="What are the payment terms in the Meridian Health Systems agreement?"></textarea>
-          </div>
-          <div>
-            <label for="asktopk">Sources to consider</label>
-            <input id="asktopk" type="number" min="1" max="50" value="10">
-          </div>
-          <button class="btn btn-primary" id="askbtn" type="button">Ask</button>
-          <p class="hint">Ctrl+Enter sends.</p>
-        </div>
+      <aside class="side chat-history" aria-label="Recent questions">
+        <button class="btn" id="newQuestion" type="button">New question</button>
         <h2 class="listhead">Recent questions</h2>
         <div id="askhistlist"></div>
+        <p class="history-note">Your questions stay here for this session.</p>
       </aside>
-      <div class="main"><div class="wrap" id="askdetail">
-        <div class="empty">
-          <b>Nothing asked yet</b>
-          Ask a question on the left, and the answer will appear here with the passages it came from.
+      <div class="chat-main">
+        <h1 class="sr">Ask your knowledge</h1>
+        <div class="mobile-chat-tools"><button class="btn btn-sm" id="mobileNewQuestion" type="button">New question</button><select id="mobileQuestionHistory" aria-label="Recent questions"><option value="">Recent questions</option></select></div>
+        <div class="chat-scroll" tabindex="0" role="region" aria-label="Answers and source evidence"><div class="wrap" id="askdetail">
+          <div class="empty"><b>Explore your knowledge</b>Enter a question to get started.</div>
+        </div></div>
+        <div class="composer-wrap">
+        <div id="askform">
+          <div>
+            <label class="sr" for="askq">Ask your knowledge</label>
+            <textarea id="askq" rows="2"
+              placeholder="Ask anything about your documents…"></textarea>
+          </div>
+          <div class="composer-controls">
+          <details class="advanced">
+            <summary>Answer preferences</summary>
+            <label for="asktopk">Sources to consider</label>
+            <input id="asktopk" type="number" min="1" max="50" value="10">
+          </details>
+          <button class="btn btn-primary" id="askbtn" type="button">Send question <span aria-hidden="true">↑</span></button>
+          </div>
         </div>
-      </div></div>
+        <p class="composer-hint">Documents first. General knowledge when needed, clearly labeled. <span>Ctrl / ⌘ + Enter to send.</span></p>
+        </div>
+      </div>
     </div>
+    <section class="team-layout" id="teamLayout" aria-label="Workspace team" hidden>
+      <div class="team-summary">
+        <div class="summary-card"><p class="eyebrow">Your organization</p><strong id="teamOrganization">—</strong><p>One workspace. A connected team.</p></div>
+        <div class="summary-card"><p class="eyebrow">Team members</p><strong id="teamTotal">—</strong><p>Accounts in this organization.</p></div>
+        <div class="summary-card"><p class="eyebrow">Access, thoughtfully assigned</p><strong>Three roles</strong><p>Administrator, contributor, and reader.</p></div>
+      </div>
+      <div class="card">
+        <div class="team-toolbar"><div><h2>People in your workspace</h2><p>Give your colleagues the access they need to get started.</p></div><button class="btn btn-primary" id="addMember" type="button">Add team member</button></div>
+        <div id="teamDirectory" aria-live="polite"></div>
+        <div class="team-pagination"><p id="teamPageInfo"></p><div><button class="btn btn-sm" id="teamPrevious" type="button">Previous</button><button class="btn btn-sm" id="teamNext" type="button">Next</button></div></div>
+      </div>
+      <p class="team-note">Membership gives access to organization-shared documents. Documents marked “Only me” retain their existing access rules.</p>
+    </section>
   </main>
 </div>
+
+<dialog class="member-dialog" id="memberDialog" aria-labelledby="memberTitle" aria-describedby="memberDescription">
+  <form id="memberForm">
+    <p class="eyebrow">Grow your workspace</p><h2 id="memberTitle">Add a team member</h2>
+    <p class="sub" id="memberDescription">Create an account in your organization. Share the sign-in details directly with your colleague; no email invitation is sent.</p>
+    <label for="memberEmail">Work email</label><input id="memberEmail" type="email" placeholder="dana.reyes@meridianhealth.com" autocomplete="off" maxlength="320" required>
+    <label for="memberRole">Workspace role</label><select id="memberRole" aria-describedby="memberRoleHelp"><option value="member">Contributor</option><option value="viewer">Reader</option><option value="admin">Administrator</option></select>
+    <p class="hint" id="memberRoleHelp">Can ask questions and add documents.</p>
+    <label for="memberPassword">Sign-in password</label><input id="memberPassword" type="password" autocomplete="new-password" minlength="8" maxlength="200" required aria-describedby="memberPasswordHelp">
+    <p class="hint" id="memberPasswordHelp">Use at least 8 characters. Share this password through a secure channel.</p>
+    <div class="errbox" id="memberError" role="alert"></div>
+    <footer><button class="btn" id="memberCancel" type="button">Cancel</button><button class="btn btn-primary" id="memberSubmit" type="submit">Create account</button></footer>
+  </form>
+</dialog>
+
+<dialog class="member-dialog" id="deleteMemberDialog" aria-labelledby="deleteMemberTitle" aria-describedby="deleteMemberDescription">
+  <form id="deleteMemberForm">
+    <p class="eyebrow">Workspace access</p><h2 id="deleteMemberTitle">Delete this account?</h2>
+    <p class="sub" id="deleteMemberDescription"></p>
+    <p class="hint">Sign-in and API access will be revoked. Existing documents and their ownership history will be retained.</p>
+    <div class="errbox" id="deleteMemberError" role="alert"></div>
+    <footer><button class="btn" id="deleteMemberCancel" type="button">Cancel</button><button class="btn btn-danger-solid" id="deleteMemberConfirm" type="submit">Delete account</button></footer>
+  </form>
+</dialog>
+
+<dialog class="source-dialog" id="sourceDialog" aria-labelledby="sourceTitle" aria-describedby="sourceMeta">
+  <div class="source-shell">
+    <div class="source-head">
+      <div class="grow">
+        <h2 id="sourceTitle">Source</h2>
+        <p class="meta" id="sourceMeta"></p>
+      </div>
+      <div class="source-actions">
+        <a class="btn btn-sm" id="sourceDownload" href="#" download>Download original</a>
+        <button class="btn btn-sm" id="sourceClose" type="button">Close</button>
+      </div>
+    </div>
+    <div class="source-body" id="sourceBody" tabindex="0" role="region" aria-label="Original source preview"></div>
+  </div>
+</dialog>
+
+<dialog class="trace-dialog" id="traceDialog" aria-labelledby="traceTitle" aria-describedby="traceDescription">
+  <div class="trace-shell">
+    <header class="trace-head"><div><p class="eyebrow">Behind the answer</p><h2 id="traceTitle">Answer trace</h2><p class="meta" id="traceDescription"></p></div><button class="btn btn-sm" id="traceClose" type="button">Close</button></header>
+    <div class="trace-body" id="traceBody" tabindex="0" role="region" aria-label="Trace steps"></div>
+  </div>
+</dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -792,25 +1020,37 @@ const QUERY_STAGES = {
   decompose: { name: "Decompose",
     what: "Checks whether this is really more than one question bundled together (e.g. “X vs Y”). If so, splits it into focused sub-questions so each gets an accurate search instead of one blurry combined one." },
   retrieve: { name: "Retrieve",
-    what: "Searches the knowledge base two ways at once — by meaning (vector similarity) and by exact keywords (BM25) — then merges the results. Only documents you're allowed to see are considered." },
+    what: "Searches the knowledge base by meaning (vector similarity) and keywords (PostgreSQL full-text search), then merges the results. Only documents you're allowed to see are considered." },
   rerank: { name: "Rerank",
     what: "Re-scores the candidate passages with a more precise model, so the ones that best answer this specific question rise to the top." },
+  pack: { name: "Prepare evidence",
+    what: "Fits passages and their document, section, and page identities into the answer model's input budget." },
+  expand: { name: "Read source context",
+    what: "Retrieves authorized neighboring passages in source order, preserving headings and table continuations. Complete-list questions prioritize matching rosters." },
   generate: { name: "Generate",
-    what: "Sends the top passages to the language model with a strict instruction to answer ONLY from them — or, if nothing relevant was found, falls back to a plain general-knowledge answer with no citations, rather than a dead end." },
+    what: "Answers from the selected evidence and validates source references. If the evidence cannot support an answer, reports insufficient evidence." },
+  general: { name: "General knowledge",
+    what: "Answers a general question using the model's knowledge. This answer is not based on your documents." },
+  validate: { name: "Validate answer",
+    what: "Checks the response format and source references. Invalid output is retried once against the same evidence." },
 };
 
 /* Page identity for the two hash routes. Distinct eyebrow/title/lede per page
    is what makes this feel like two places, not one view with a mode switch.
    §8: interface copy is sentence case. */
 const PAGES = {
-  ingest: { eyebrow: "Ingestion",
-            title: "Document trace",
-            sub: "Watch a document become searchable knowledge — every step, and why.",
-            doctitle: "Document Trace" },
-  ask:    { eyebrow: "Retrieval",
-            title: "Ask",
-            sub: "Ask a question and see exactly how the answer was produced — cache, retrieval, or general knowledge.",
-            doctitle: "Ask — Document Trace" },
+  ingest: { eyebrow: "Your workspace / Library",
+            title: "Knowledge library",
+            sub: "Bring your documents together. Make every insight discoverable, with a clear path back to its source.",
+            doctitle: "Knowledge library — Agentic AI" },
+  ask:    { eyebrow: "Your workspace / Ask",
+            title: "Good questions. Clear answers.",
+            sub: "Explore your organization's knowledge in your own words. Follow the evidence behind every answer.",
+            doctitle: "Ask your knowledge — Agentic AI" },
+  team:   { eyebrow: "Your workspace / Team",
+            title: "Better knowledge, together.",
+            sub: "Bring your colleagues into the workspace, with the right access for the way they work.",
+            doctitle: "Your team — Agentic AI" },
 };
 
 /* 24x24 stroke icons, §5. All decorative, so all aria-hidden + focusable=false;
@@ -826,6 +1066,21 @@ let token = localStorage.getItem(TOKEN_KEY) || "";
 let selected = null;
 let poll = null;
 let renderedDoc = null;      // drives first-appearance-only reveal animation
+let accountEpoch = 0;
+const activeRequests = new Set();
+let sourceObjectURL = "";
+let sourceOpenToken = 0;
+let sourceReturnFocus = null;
+let inlineSourceCleanup = () => {};
+let workspace = null;
+let teamOffset = 0;
+let teamRequest = 0;
+let libraryDocuments = [];
+let memberToDelete = null;
+let pendingQuestion = "";
+let askViewVersion = 0;
+let traceRequest = 0;
+const ROLE_LABELS = { admin: "Administrator", member: "Contributor", viewer: "Reader" };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
@@ -839,39 +1094,70 @@ function toast(msg) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { Authorization: "Bearer " + token, ...(opts.headers || {}) },
-  });
-  if (res.status === 401 || res.status === 403) {
-    signOut("That token was not accepted. Paste a current one to continue.");
-    throw new Error("unauthorized");
+  const epoch = accountEpoch;
+  const controller = new AbortController();
+  const { responseType = "json", signal, ...fetchOpts } = opts;
+  const abort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
   }
-  if (!res.ok) throw new Error((await res.text()) || res.statusText);
-  return res.json();
+  const headers = new Headers(fetchOpts.headers || {});
+  headers.set("Authorization", "Bearer " + token);
+  activeRequests.add(controller);
+  try {
+    const res = await fetch(path, {
+      ...fetchOpts, signal: controller.signal, headers,
+    });
+    if (epoch !== accountEpoch) throw new DOMException("Account changed", "AbortError");
+    if (res.status === 401) {
+      signOut("That token was not accepted. Paste a current one to continue.");
+      throw new Error("unauthorized");
+    }
+    if (!res.ok) {
+      let detail;
+      try { detail = (await res.json()).detail; } catch (_) { /* non-JSON failure */ }
+      throw new Error(typeof detail === "string" ? detail : `The request could not be completed (${res.status}). Try again.`);
+    }
+    const data = responseType === "blob" ? await res.blob()
+      : responseType === "text" ? await res.text()
+      : await res.json();
+    if (epoch !== accountEpoch) throw new DOMException("Account changed", "AbortError");
+    return data;
+  } finally {
+    if (signal) signal.removeEventListener("abort", abort);
+    activeRequests.delete(controller);
+  }
 }
 
 // ------------------------------------------------------------------ routing --
 
 function navigate(page, opts = {}) {
   if (!PAGES[page]) page = "ingest";
+  if (page === "team" && !workspace?.manage_team) page = "ingest";
   if (!opts.silent && location.hash !== "#/" + page) location.hash = "#/" + page;
   const isIngest = page === "ingest";
+  if (page !== "ask") inlineSourceCleanup();
   $("docsLayout").hidden = !isIngest;
-  $("askLayout").hidden = isIngest;
+  $("askLayout").hidden = page !== "ask";
+  $("teamLayout").hidden = page !== "team";
+  document.body.classList.toggle("chat-page", page === "ask");
   $("navIngest").classList.toggle("active", isIngest);
-  $("navAsk").classList.toggle("active", !isIngest);
+  $("navAsk").classList.toggle("active", page === "ask");
+  $("navTeam").classList.toggle("active", page === "team");
   $("navIngest").setAttribute("aria-current", isIngest ? "page" : "false");
-  $("navAsk").setAttribute("aria-current", isIngest ? "false" : "page");
+  $("navAsk").setAttribute("aria-current", page === "ask" ? "page" : "false");
+  $("navTeam").setAttribute("aria-current", page === "team" ? "page" : "false");
   $("pageEyebrow").textContent = PAGES[page].eyebrow;
   $("pageTitle").textContent = PAGES[page].title;
   $("pageSub").textContent = PAGES[page].sub;
   document.title = PAGES[page].doctitle;
 
-  if (!isIngest) {
+  if (page === "ask") {
     renderAskHistList();
     renderAskDetail(askHistory[askSelected] || null);
   }
+  if (page === "team") loadTeam();
 }
 function currentHashPage() {
   return location.hash.replace(/^#\/?/, "") || "ingest";
@@ -879,24 +1165,76 @@ function currentHashPage() {
 window.addEventListener("hashchange", () => navigate(currentHashPage(), { silent: true }));
 $("navIngest").onclick = () => navigate("ingest");
 $("navAsk").onclick = () => navigate("ask");
+$("navTeam").onclick = () => navigate("team");
 
 // ---------------------------------------------------------------- auth gate --
 
 function showGate(msg) {
+  traceRequest += 1;
+  $("traceDialog").close();
+  $("traceBody").replaceChildren();
+  $("traceDescription").textContent = "";
+  document.body.classList.remove("chat-page");
+  memberToDelete = null;
+  pendingQuestion = "";
+  askViewVersion += 1;
+  $("deleteMemberDialog").close();
+  $("deleteMemberDescription").textContent = "";
+  $("deleteMemberError").textContent = "";
+  $("mobileQuestionHistory").innerHTML = '<option value="">Recent questions</option>';
+  workspace = null;
+  libraryDocuments = [];
+  teamRequest += 1;
+  $("accountLabel").hidden = true;
+  $("navTeam").hidden = true;
+  $("memberDialog").close();
+  $("memberForm").reset();
+  $("memberCancel").disabled = false;
+  clearTimeout(toast._t);
+  $("toast").classList.remove("on");
+  $("toast").textContent = "";
   $("navrail").hidden = true;
   $("pagehead").hidden = true;
   $("app").hidden = true; $("gate").hidden = false;
   $("refresh").hidden = true; $("signout").hidden = true;
   $("gateerr").textContent = msg || "";
-  document.title = "Document Trace";
-  $("tok").focus();
+  document.title = "Sign in — Agentic AI";
 }
 function signOut(msg) {
+  inlineSourceCleanup();
+  closeSource();
+  accountEpoch += 1;
+  activeRequests.forEach(controller => controller.abort());
+  activeRequests.clear();
   localStorage.removeItem(TOKEN_KEY); token = "";
+  localStorage.removeItem("rag_ask_history");
+  askHistory = []; askSelected = 0; selected = null; renderedDoc = null;
+  ["askdetail", "askhistlist", "list", "detail", "teamDirectory", "teamOrganization", "teamTotal", "teamPageInfo", "organizationName", "accountRole", "memberError"].forEach(id => { if ($(id)) $(id).replaceChildren(); });
+  $("askq").value = ""; $("tok").value = "";
+  $("askbtn").disabled = false; $("askbtn").textContent = "Send question";
   if (poll) { clearTimeout(poll); poll = null; }
   showGate(msg);
 }
-function enterApp() {
+async function enterApp() {
+  const epoch = accountEpoch;
+  try { workspace = await api("/onboarding/me"); }
+  catch (e) { if (epoch === accountEpoch && e.name !== "AbortError") showGate("Your workspace could not be opened. Sign in again or retry your access token."); return; }
+  $("organizationName").textContent = workspace.organization;
+  $("accountRole").textContent = ROLE_LABELS[workspace.role] || workspace.role;
+  $("accountLabel").hidden = false;
+  $("navTeam").hidden = !workspace.manage_team;
+  $("drop").hidden = !workspace.can_ingest;
+  $("scope").closest(".field").hidden = !workspace.publish_global;
+  $("visibilityField").hidden = !workspace.can_ingest;
+  $("globalScope").hidden = !workspace.publish_global;
+  $("scope").value = "tenant";
+  $("visibility").value = "private";
+  $("documentSearch").value = "";
+  teamOffset = 0;
+  if (!$("detail").children.length) $("detail").innerHTML = libraryWelcomeHTML;
+  const welcomeUpload = $("welcomeUpload");
+  if (welcomeUpload) { welcomeUpload.hidden = !workspace.can_ingest; welcomeUpload.onclick = () => $("file").click(); }
+  if ($("welcomeAsk")) $("welcomeAsk").onclick = () => navigate("ask");
   $("gate").hidden = true; $("app").hidden = false;
   $("navrail").hidden = false; $("pagehead").hidden = false;
   $("refresh").hidden = false; $("signout").hidden = false;
@@ -906,11 +1244,12 @@ function enterApp() {
 $("save").onclick = async () => {
   const v = $("tok").value.trim();
   if (!v) { $("gateerr").textContent = "Enter a token to continue."; return; }
+  if (token !== v) signOut("");
   token = v;
   try {
     await api("/documents?limit=1");
     localStorage.setItem(TOKEN_KEY, v);
-    enterApp();
+    await enterApp();
   } catch {
     token = "";
     $("gateerr").textContent = "That token was not accepted. Check it was copied whole, then try again.";
@@ -918,7 +1257,10 @@ $("save").onclick = async () => {
 };
 $("tok").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
 $("signout").onclick = () => signOut("");
-$("refresh").onclick = () => (currentHashPage() === "ask" ? renderAskHistList() : loadList());
+window.addEventListener("storage", event => {
+  if (event.key === TOKEN_KEY && event.newValue !== token) signOut("Account changed in another tab.");
+});
+$("refresh").onclick = () => currentHashPage() === "team" ? loadTeam() : currentHashPage() === "ask" ? renderAskHistList() : loadList();
 
 // ------------------------------------------------------------ document list --
 
@@ -943,19 +1285,33 @@ const stageStatusHTML = (status) => statusHTML(status, STAGE_LABELS);
 async function loadList() {
   let data;
   try { data = await api("/documents?limit=100"); }
-  catch (e) { toast("Documents could not be loaded — " + e.message); return; }
+  catch (e) { if (e.name !== "AbortError") toast("Documents could not be loaded — " + e.message); return; }
+  libraryDocuments = data.documents;
+  $("documentCount").textContent = data.documents.length;
+  renderLibraryList();
+}
 
+function renderLibraryList() {
   const list = $("list");
-  if (!data.documents.length) {
+  const query = $("documentSearch").value.trim().toLowerCase();
+  const documents = libraryDocuments.filter(d => (d.filename || "").toLowerCase().includes(query));
+  if (!libraryDocuments.length) {
     list.innerHTML = `<div class="empty inline"><b>No documents yet</b>
-      Drop a file above to ingest your first one.</div>`;
+      ${workspace?.can_ingest ? "Add a file above to start your library." : "Ask your workspace administrator to share a document with your organization."}</div>`;
     return;
   }
-  list.innerHTML = data.documents.map((d) => `
+  if (!documents.length) {
+    list.innerHTML = `<div class="empty inline"><b>No matching documents</b>Try another filename or clear your search.</div>`;
+    return;
+  }
+  list.innerHTML = documents.map((d) => `
     <div class="doc${selected && selected.document_id === d.document_id ? " sel" : ""}"
          role="button" tabindex="0"
          data-doc="${esc(d.document_id)}" data-job="${esc(d.job_id || "")}">
       <span class="nm" title="${esc(d.filename)}">${esc(d.filename || d.document_id)}</span>
+      ${(d.version || 1) > 1
+        ? `<span class="vpill" title="Updated ${esc(d.updated_at || "")}">v${d.version}</span>`
+        : ""}
       ${statusHTML(d.status)}
     </div>`).join("");
 
@@ -965,6 +1321,7 @@ async function loadList() {
     el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
   });
 }
+$("documentSearch").addEventListener("input", renderLibraryList);
 
 function select(documentId, jobId) {
   if (!jobId) { toast("That document has no ingestion job recorded — re-ingest it to get a trace."); return; }
@@ -996,6 +1353,7 @@ async function refreshDetail() {
   } else {
     poll = null;
     loadChunks(t.document.document_id);
+    loadVersions(t.document.document_id, t.document.source_type);
     loadList();                       // the sidebar pill is now stale
   }
 }
@@ -1038,10 +1396,13 @@ function render(t, running) {
           ${esc(t.document.source_type)}<span class="sep" aria-hidden="true">|</span>
           ${esc(t.document.visibility)}<span class="sep" aria-hidden="true">|</span>
           ${esc(t.document.scope)} scope<span class="sep" aria-hidden="true">|</span>
-          ${esc(t.document.created_at || "")}
+          ${esc(t.document.created_at || "")}${(t.document.version || 1) > 1 ? `
+          <span class="sep" aria-hidden="true">|</span>
+          v${t.document.version}, updated ${esc(t.document.updated_at || "")}` : ""}
         </p>
         <p style="margin:10px 0 0">${statusHTML(t.job.status)}</p>
       </div>
+      <button class="btn btn-sm" id="viewCurrent" type="button">View source</button>
       <button class="btn btn-danger btn-sm" id="del" type="button">Delete document</button>
     </div>
     <div id="delzone"></div>
@@ -1093,6 +1454,16 @@ function render(t, running) {
 
     <section class="section">
       <div class="rule"></div>
+      <h3>Version history</h3>
+      <p class="lede">Every set of bytes ingested under this document, and how the chunk
+         set changed as a result. Only the newest version is searchable — re-ingesting
+         replaces the previous one rather than adding to it.</p>
+      <div class="body" id="versions"><p class="lede">${running
+        ? "This appears once the pipeline finishes." : "Loading…"}</p></div>
+    </section>
+
+    <section class="section">
+      <div class="rule"></div>
       <h3>The chunks that got indexed</h3>
       <p class="lede">The actual units a search retrieves — each one traceable back to the
          extractor that produced it and the page it came from.</p>
@@ -1101,7 +1472,14 @@ function render(t, running) {
     </section>
   `;
 
+  $("viewCurrent").onclick = (event) => openSource({
+    document_id: t.document.document_id,
+    version: t.document.version,
+    source_type: t.document.source_type,
+    filename: t.document.filename,
+  }, event.currentTarget);
   $("del").onclick = () => askDelete(t);
+  $("del").hidden = !workspace?.manage_team;
 }
 
 /* Deleting is irreversible and hits several stores at once, so the confirmation
@@ -1254,7 +1632,7 @@ async function loadChunks(documentId) {
   catch (e) { host.innerHTML = `<p class="lede">Chunks could not be loaded — ${esc(e.message)}. Use Refresh to try again.</p>`; return; }
   if (!data.chunks.length) { host.innerHTML = `<p class="lede">No chunks were produced. Check the Parse and Chunk stages above for what the file actually contained.</p>`; return; }
 
-  host.innerHTML = `<div class="tablewrap"><div class="tablescroll"><table>
+  host.innerHTML = `<div class="tablewrap"><div class="tablescroll" tabindex="0" role="region" aria-label="Searchable document passages"><table>
     <thead><tr>
       <th scope="col">#</th><th scope="col">Kind</th><th scope="col">Read by</th>
       <th scope="col">Why</th><th scope="col">Where</th>
@@ -1278,18 +1656,386 @@ function fmtPages(p) {
   return `p.${p}`;
 }
 
+async function loadVersions(documentId, sourceType) {
+  const host = $("versions");
+  if (!host) return;
+  let data;
+  try { data = await api(`/documents/${documentId}/versions`); }
+  catch (e) { host.innerHTML = `<p class="lede">Version history could not be loaded — ${esc(e.message)}. Use Refresh to try again.</p>`; return; }
+  if (!data.versions.length) { host.innerHTML = `<p class="lede">No version history recorded for this document.</p>`; return; }
+  if (data.versions.length === 1) {
+    host.innerHTML = `<p class="lede">Ingested once, never replaced. Re-upload a file with the
+      same name to create version 2 — the new content is indexed and anything dropped from
+      it stops being searchable.</p>`;
+    return;
+  }
+  host.innerHTML = data.versions.map((v) => versionRow(v, documentId, sourceType)).join("");
+  host.querySelectorAll(".version-source").forEach((button) => {
+    button.onclick = (event) => openSource({
+      document_id: documentId,
+      version: Number(button.dataset.version),
+      source_type: sourceType,
+      filename: button.dataset.filename,
+    }, event.currentTarget);
+  });
+}
+
+/* One version. The counts are the point, so they lead; the previews are the
+   evidence and sit underneath. A version whose job hasn't reported yet has null
+   counts -- say so rather than rendering "0 added, 0 removed", which would read
+   as "nothing changed". */
+function versionRow(v) {
+  const counted = v.chunks_added != null;
+  const delta = counted
+    ? `<p class="vdelta">
+         <span class="n">+${v.chunks_added}</span> added<span class="sep" aria-hidden="true">|</span>
+         <span class="n">−${v.chunks_removed}</span> removed<span class="sep" aria-hidden="true">|</span>
+         <span class="n">${v.chunks_unchanged}</span> unchanged
+       </p>`
+    : `<p class="vdelta">Chunk changes not recorded — the ingestion for this version
+       did not finish.</p>`;
+  const previews = [
+    previewList("Added", v.added_preview, v.added_truncated),
+    previewList("Removed", v.removed_preview, v.removed_truncated),
+  ].join("");
+  return `<div class="vrow">
+    <div class="vhead">
+      <span class="vpill">v${v.version}</span>
+      ${v.current ? `<span class="vcur">Searchable now</span>` : ""}
+      <span class="vwhen">${esc(v.created_at || "")}</span>
+      <span class="vwhen"><span class="sep" aria-hidden="true">|</span>
+        ${fmtBytes(v.byte_size)}<span class="sep" aria-hidden="true">|</span>
+         ${esc(v.sha || "")}</span>
+      <button class="btn btn-sm version-source" type="button"
+        data-version="${esc(v.version)}" data-filename="${esc(v.filename || "")}">View source</button>
+    </div>
+    ${delta}
+    ${previews}
+  </div>`;
+}
+
+function previewList(label, items, truncated) {
+  if (!items || !items.length) return "";
+  return `<ul class="vprev">
+    ${items.map((t) => `<li><span class="tag">${esc(label)}</span>${esc(t)}</li>`).join("")}
+    ${truncated ? `<li><span class="tag">${esc(label)}</span>… and more, not shown</li>` : ""}
+  </ul>`;
+}
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ------------------------------------------------------------ source viewer --
+
+function sourcePath(source) {
+  const id = encodeURIComponent(source.document_id);
+  return source.version != null && source.version !== ""
+    ? `/documents/${id}/versions/${encodeURIComponent(source.version)}/content`
+    : `/documents/${id}/content`;
+}
+
+function sourceKind(source, blob) {
+  const declared = String(source.source_type || "").toLowerCase();
+  const filename = String(source.filename || "").toLowerCase();
+  const mime = String(blob && blob.type || "").toLowerCase();
+  if (filename.endsWith(".pdf") || declared === "pdf" || mime.includes("pdf")) return "pdf";
+  if (/\.(png|jpe?g|gif|webp|bmp|tiff?)$/.test(filename) || declared === "image" || mime.startsWith("image/")) return "image";
+  if (/\.(txt|md|markdown|csv|html?|json|xml|log)$/.test(filename) || mime.startsWith("text/")) return "text";
+  if (/\.(docx|rtf|xls|xlsx)$/.test(filename) || ["docx", "rtf", "xls", "xlsx"].includes(declared)) return "extracted";
+  return "native";
+}
+
+function citationPage(source) {
+  const p = source.provenance || {};
+  const locator = p.locator || p;
+  const pages = p.pages || (locator.page != null ? [locator.page] : []);
+  if (pages && pages.length) return Number(pages[0]) || null;
+  const match = String(source.location || "").match(/\bp(?:p)?\.\s*(\d+)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function provenanceSummary(source) {
+  const p = source.provenance || {};
+  const parts = [];
+  if (source.location) parts.push(String(source.location));
+  const locator = p.locator || p;
+  if (locator.sheet) parts.push(`Sheet: ${locator.sheet}${locator.cell_range ? `, ${locator.cell_range}` : ""}`);
+  if (locator.section || locator.section_path) parts.push(`Section: ${locator.section || locator.section_path}`);
+  if (locator.source_line != null) parts.push(`Line ${locator.source_line}`);
+  if (locator.source_line_start != null) parts.push(`Lines ${locator.source_line_start}-${locator.source_line_end || locator.source_line_start}`);
+  if (locator.body_index != null) parts.push(`Document item ${locator.body_index}`);
+  if (locator.row_start != null) parts.push(`Rows ${locator.row_start}-${locator.row_end || locator.row_start}`);
+  if (locator.table_index != null) parts.push(`Table ${Number(locator.table_index) + 1}`);
+  const regions = p.regions || p.bboxes || (p.bbox ? [p.bbox] : []);
+  if (regions.length) {
+    const labels = regions.map((region, i) => {
+      const box = Array.isArray(region) ? region : region.bbox;
+      const page = !Array.isArray(region) && region.page != null ? ` on page ${region.page}` : "";
+      if (!box && region.x != null) return `highlight ${i + 1}${page}`;
+      return box && box.length >= 4
+        ? `region ${i + 1}${page}: (${box.slice(0, 4).map(String).join(", ")})`
+        : `region ${i + 1}${page}`;
+    });
+    parts.push(labels.join("; "));
+  }
+  return { text: [...new Set(parts.filter(Boolean))].join("; "), hasRegions: regions.length > 0 };
+}
+
+function clearSourceURL() {
+  if (sourceObjectURL) URL.revokeObjectURL(sourceObjectURL);
+  sourceObjectURL = "";
+}
+
+function closeSource() {
+  sourceOpenToken += 1;
+  clearSourceURL();
+  const dialog = $("sourceDialog");
+  if (dialog.open) dialog.close();
+  $("sourceBody").replaceChildren();
+  $("sourceDownload").removeAttribute("href");
+  document.body.classList.remove("modal-open");
+  if (sourceReturnFocus && document.contains(sourceReturnFocus)) sourceReturnFocus.focus();
+  sourceReturnFocus = null;
+}
+
+function sourceNote(source) {
+  const summary = provenanceSummary(source);
+  if (!summary.text && !summary.hasRegions) return null;
+  const note = document.createElement("div");
+  note.className = "source-note";
+  const strong = document.createElement("b");
+  strong.textContent = "Cited location: ";
+  note.append(strong, document.createTextNode(summary.text || "A source region was recorded."));
+  if (summary.hasRegions) {
+    note.append(document.createElement("br"), document.createTextNode(
+      "Highlighted areas identify the source regions carried by the cited chunk."
+    ));
+  }
+  return note;
+}
+
+async function renderExtractedSource(source, message, openToken = sourceOpenToken) {
+  const body = $("sourceBody");
+  body.replaceChildren();
+  const heading = document.createElement("div");
+  heading.className = "source-fallback-head";
+  const copy = document.createElement("div");
+  copy.className = "grow";
+  const title = document.createElement("h3");
+  title.textContent = "Extracted text preview";
+  const detail = document.createElement("p");
+  detail.textContent = message || "This format does not have a reliable browser-native preview. These are the extracted passages used for search.";
+  copy.append(title, detail);
+  heading.append(copy);
+  body.append(heading);
+  const note = sourceNote(source);
+  if (note) body.append(note);
+
+  let preview;
+  try {
+    preview = await api(`/documents/${encodeURIComponent(source.document_id)}/versions/${encodeURIComponent(source.version)}/preview`);
+  } catch (error) {
+    if (openToken !== sourceOpenToken) return;
+    const box = document.createElement("div");
+    box.className = "errbox";
+    box.textContent = "The extracted preview could not be loaded: " + error.message;
+    body.append(box);
+    return;
+  }
+  if (openToken !== sourceOpenToken) return;
+  if (!preview.text) {
+    const empty = document.createElement("p");
+    empty.className = "lede";
+    empty.textContent = "No extracted chunks are available for this document.";
+    body.append(empty);
+    return;
+  }
+  const text = preview.blocks?.length ? renderStructuredSource(preview, source)
+    : renderLocatedText(preview, source);
+  body.append(text);
+  explainHighlight(body, source);
+  requestAnimationFrame(() => scrollToHighlight(body));
+  if (preview.truncated) {
+    const warning = document.createElement("p");
+    warning.className = "source-note";
+    warning.textContent = "The on-screen preview is bounded. Download the original for the remaining content.";
+    body.prepend(warning);
+  }
+}
+
+async function renderPdfSource(source, openToken) {
+  const body = $("sourceBody");
+  body.replaceChildren();
+  const wrap = document.createElement("div");
+  wrap.className = "source-preview";
+  const note = sourceNote(source);
+  if (note) wrap.append(note);
+  const provenance = source.provenance || {};
+  const regions = (provenance.regions || []).filter((region) => region && region.page);
+  const citedPages = [...new Set((provenance.pages || regions.map((region) => region.page)).map(Number).filter(Boolean))];
+  const pages = citedPages.length ? citedPages : [citationPage(source) || 1];
+  let selectedPage = pages[0];
+  const controls = document.createElement("div");
+  controls.className = "source-pages";
+  const pageHost = document.createElement("div");
+
+  async function showPage(page) {
+    selectedPage = page;
+    controls.querySelectorAll("button").forEach((button) => {
+      button.disabled = Number(button.dataset.page) === page;
+    });
+    pageHost.className = "source-loading";
+    pageHost.textContent = `Loading page ${page}...`;
+    let pageBlob;
+    try {
+      pageBlob = await api(`/documents/${encodeURIComponent(source.document_id)}/versions/${encodeURIComponent(source.version)}/pages/${page}`, { responseType: "blob" });
+    } catch (error) {
+      if (openToken !== sourceOpenToken) return;
+      pageHost.className = "errbox";
+      pageHost.textContent = "The cited PDF page could not be rendered: " + error.message;
+      return;
+    }
+    if (openToken !== sourceOpenToken || selectedPage !== page) return;
+    const pageURL = URL.createObjectURL(pageBlob);
+    const frame = document.createElement("div");
+    frame.className = "source-pdf-page";
+    const image = document.createElement("img");
+    image.alt = `Page ${page} of ${source.filename || "source PDF"}`;
+    image.onload = () => URL.revokeObjectURL(pageURL);
+    image.src = pageURL;
+    frame.append(image);
+    frame.append(passageOverlay(regions, page, provenance.selection_status !== "quote"));
+    pageHost.className = "";
+    pageHost.replaceChildren(frame);
+  }
+
+  pages.forEach((page) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-sm";
+    button.dataset.page = page;
+    button.textContent = `Page ${page}`;
+    button.onclick = () => showPage(page);
+    controls.append(button);
+  });
+  wrap.append(controls, pageHost);
+  body.append(wrap);
+  await showPage(selectedPage);
+}
+
+function renderNativeSource(source, kind, openToken) {
+  const body = $("sourceBody");
+  body.replaceChildren();
+  const wrap = document.createElement("div");
+  wrap.className = "source-preview";
+  const note = sourceNote(source);
+  if (note) wrap.append(note);
+  const url = sourceObjectURL + (kind === "pdf" && citationPage(source) ? `#page=${citationPage(source)}` : "");
+  let preview;
+  if (kind === "image") {
+    preview = document.createElement("img");
+    preview.className = "source-image";
+    preview.alt = source.filename ? `Source image: ${source.filename}` : "Source image";
+  } else {
+    preview = document.createElement("object");
+    preview.className = "source-native";
+    preview.type = kind === "pdf" ? "application/pdf" : "application/octet-stream";
+    preview.setAttribute("aria-label", source.filename ? `Preview of ${source.filename}` : "Source preview");
+  }
+  preview.addEventListener("error", () => {
+    if (openToken === sourceOpenToken) renderExtractedSource(source, "The native preview failed. Showing extracted passages instead.", openToken);
+  }, { once: true });
+  if (kind === "image") preview.src = url;
+  else preview.data = url;
+  wrap.append(preview);
+  if (kind !== "image") {
+    const fallback = document.createElement("button");
+    fallback.type = "button";
+    fallback.className = "btn btn-sm";
+    fallback.textContent = "Preview not visible? Show extracted text";
+    fallback.onclick = () => renderExtractedSource(source, "The browser preview was unavailable. Showing extracted passages instead.", openToken);
+    wrap.append(fallback);
+  }
+  body.append(wrap);
+}
+
+async function openSource(source, opener) {
+  if (!source || !source.document_id) return;
+  const openToken = ++sourceOpenToken;
+  sourceReturnFocus = opener || document.activeElement;
+  clearSourceURL();
+  const dialog = $("sourceDialog");
+  $("sourceTitle").textContent = source.filename || source.document_id;
+  $("sourceMeta").textContent = [source.source_type, source.version != null ? `Version ${source.version}` : "", source.location]
+    .filter(Boolean).join(" | ");
+  $("sourceDownload").removeAttribute("href");
+  $("sourceDownload").setAttribute("aria-disabled", "true");
+  const loading = document.createElement("div");
+  loading.className = "source-loading";
+  loading.innerHTML = '<span><span class="btnspin" aria-hidden="true"></span>Loading source…</span>';
+  $("sourceBody").replaceChildren(loading);
+  if (!dialog.open) dialog.showModal();
+  document.body.classList.add("modal-open");
+  $("sourceClose").focus();
+
+  let blob;
+  try {
+    blob = await api(sourcePath(source), { responseType: "blob" });
+  } catch (error) {
+    if (openToken !== sourceOpenToken || error.name === "AbortError") return;
+    await renderExtractedSource(source, "The original file could not be previewed. Showing extracted passages instead.", openToken);
+    return;
+  }
+  if (openToken !== sourceOpenToken) return;
+  sourceObjectURL = URL.createObjectURL(blob);
+  const download = $("sourceDownload");
+  download.href = sourceObjectURL;
+  download.download = source.filename || `document-${source.document_id}`;
+  download.removeAttribute("aria-disabled");
+  const kind = sourceKind(source, blob);
+  if (kind === "extracted") {
+    await renderExtractedSource(source, "", openToken);
+  } else if (kind === "pdf" && source.version != null) {
+    await renderPdfSource(source, openToken);
+  } else if (kind === "text") {
+    const text = await blob.text();
+    if (openToken !== sourceOpenToken) return;
+    const pre = renderLocatedText({ text }, source);
+    $("sourceBody").replaceChildren(pre);
+    explainHighlight($("sourceBody"), source);
+    requestAnimationFrame(() => scrollToHighlight($("sourceBody")));
+  } else {
+    renderNativeSource(source, kind, openToken);
+  }
+}
+
+$("sourceClose").onclick = closeSource;
+$("sourceDialog").addEventListener("cancel", (event) => { event.preventDefault(); closeSource(); });
+$("sourceDialog").addEventListener("click", (event) => {
+  if (event.target === $("sourceDialog")) closeSource();
+});
+
 // ------------------------------------------------------------------ upload --
 
 async function upload(files) {
+  if (!workspace?.can_ingest) return;
+  const epoch = accountEpoch;
   const scope = $("scope").value;
   for (const f of files) {
+    if (epoch !== accountEpoch) return;
     toast(`${f.name}: uploading…`);
     const fd = new FormData();
     fd.append("file", f, f.name);
     fd.append("scope", scope);
+    fd.append("visibility", $("visibility").value);
     let res;
     try { res = await api("/ingest", { method: "POST", body: fd }); }
     catch (e) {
+      if (epoch !== accountEpoch) return;
       const msg = /platform tenant.*admin/i.test(e.message)
         ? "global scope is reserved for the platform tenant's admin — ingest it as tenant scope instead"
         : e.message;
@@ -1324,13 +2070,12 @@ drop.addEventListener("drop", (e) => {
 
 // ---------------------------------------------------------------------- ask --
 
-const ASK_HIST_KEY = "rag_ask_history";
+localStorage.removeItem("rag_ask_history");
 let askHistory = [];
-try { askHistory = JSON.parse(localStorage.getItem(ASK_HIST_KEY) || "[]"); } catch { askHistory = []; }
 let askSelected = 0;
 
 function saveAskHistory() {
-  try { localStorage.setItem(ASK_HIST_KEY, JSON.stringify(askHistory.slice(0, 30))); } catch { /* storage full/blocked -- history just won't persist */ }
+  askHistory = askHistory.slice(0, 30);
 }
 
 // Cache vs. live vs. general-knowledge -- the one fact a reader needs at a
@@ -1338,16 +2083,18 @@ function saveAskHistory() {
 // app.retrieval.rag.query._result_from_cache): a cache hit always leads its
 // trace with {"stage": "cache", ...}; a live run never does.
 function askTag(entry) {
-  if (entry.grounded === false) return { cls: "general", text: "General" };
+  if (entry.evidence_origin === "general" && entry.answer_status === "general_answer") return { cls: "general", text: "General knowledge" };
+  if (entry.grounded === false) return { cls: "general", text: "Insufficient evidence" };
   if (entry.trace && entry.trace[0] && entry.trace[0].stage === "cache") return { cls: "cache", text: "Cache" };
   return { cls: "live", text: "Live" };
 }
 
 function renderAskHistList() {
   const host = $("askhistlist");
+  $("mobileQuestionHistory").innerHTML = '<option value="">Recent questions</option>' + askHistory.map((entry, index) => `<option value="${index}">${esc(entry.question)}</option>`).join("");
   if (!askHistory.length) {
     host.innerHTML = `<div class="empty inline"><b>No questions yet</b>
-      Type a question above and press Ask.</div>`;
+      Start with a question in the message box.</div>`;
     return;
   }
   host.innerHTML = askHistory.map((e, i) => {
@@ -1359,6 +2106,7 @@ function renderAskHistList() {
   }).join("");
   host.querySelectorAll(".doc").forEach((el) => {
     const open = () => {
+      askViewVersion += 1;
       askSelected = Number(el.dataset.idx);
       renderAskHistList();
       renderAskDetail(askHistory[askSelected]);
@@ -1380,21 +2128,250 @@ function citationCard(c, i) {
       ${c.location ? `<span class="loc">${esc(c.location)}</span>` : ""}
     </div>
     <div class="snippet">${esc(c.snippet || "")}</div>
-    <button class="jump" type="button" data-doc="${esc(c.document_id || "")}">View ingestion trace ${ICONS.arrow}</button>
+    <div class="actions">
+      ${c.document_id ? `<button class="btn btn-sm open-source" type="button" data-citation="${i}">Open source</button>` : ""}
+      <button class="jump" type="button" data-doc="${esc(c.document_id || "")}">View ingestion trace ${ICONS.arrow}</button>
+    </div>
   </div>`;
 }
 
+// Preserve individual line shapes; join only adjacent native words on one line.
+function passageGroups(regions, page) {
+  const valid = regions.filter(r => Number(r.page) === page &&
+    [r.x, r.y, r.width, r.height].every(Number.isFinite) &&
+    r.x >= 0 && r.y >= 0 && r.width > 0 && r.height > 0 &&
+    r.x + r.width <= 1.00001 && r.y + r.height <= 1.00001)
+    .slice().sort((a, b) => a.y - b.y || a.x - b.x);
+  // Baseline jitter from mixed fonts must not scramble words on one line.
+  const rows = [];
+  for (const region of valid) {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(region.y - row[0].y) <= Math.min(region.height, row[0].height) * .25) row.push(region);
+    else rows.push([region]);
+  }
+  const lines = rows.flatMap(row => row.sort((a, b) => a.x - b.x));
+  const groups = [];
+  for (const line of lines) {
+    const group = groups[groups.length - 1];
+    const last = group && group[group.length - 1];
+    if (last && last.precision === "word" && line.precision === "word" &&
+        Math.abs(line.y - last.y) <= Math.min(last.height, line.height) * .25 &&
+        line.x >= last.x + last.width - .001 &&
+        line.x - (last.x + last.width) <= .012) group.push(line);
+    else groups.push([line]);
+  }
+  return groups.map(group => {
+    const x = Math.min(...group.map(r => r.x)), y = Math.min(...group.map(r => r.y));
+    return { x, y, width: Math.max(...group.map(r => r.x + r.width)) - x,
+      height: Math.max(...group.map(r => r.y + r.height)) - y,
+      approximate: group.some(r => r.precision && !["word", "exact_text"].includes(r.precision)) };
+  });
+}
+
+function passageOverlay(regions, page, approximate) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 1000 1000");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "passage-overlay" + (approximate ? " approximate" : ""));
+  for (const r of passageGroups(regions, page)) {
+    const rect = document.createElementNS(ns, "rect");
+    if (r.approximate) rect.setAttribute("class", "approximate");
+    const x = Math.max(0, r.x * 1000 - .5), y = Math.max(0, r.y * 1000 - .5);
+    rect.setAttribute("x", x); rect.setAttribute("y", y);
+    rect.setAttribute("width", Math.min(1000 - x, r.width * 1000 + 1));
+    rect.setAttribute("height", Math.min(1000 - y, r.height * 1000 + 1));
+    rect.setAttribute("rx", "2"); svg.append(rect);
+  }
+  return svg;
+}
+
+function renderSourceText(text, quote) {
+  const pre = document.createElement("pre");
+  pre.className = "source-text";
+  const match = uniqueQuoteRange(text, quote);
+  if (match) {
+    const [start, end] = match;
+    pre.append(document.createTextNode(text.slice(0, start)));
+    const mark = document.createElement("mark");
+    mark.className = "source-selection"; mark.textContent = text.slice(start, end);
+    pre.append(mark, document.createTextNode(text.slice(end)));
+  } else pre.textContent = text;
+  return pre;
+}
+
+function uniqueQuoteRange(text, quote) {
+  if (!quote || !quote.trim()) return null;
+  const start = text.indexOf(quote);
+  if (start >= 0) return text.indexOf(quote, start + 1) === -1 ? [start, start + quote.length] : null;
+  // Preserve source offsets while tolerating whitespace changes during extraction.
+  const positions = [];
+  let compact = "";
+  for (let i = 0; i < text.length; i++) {
+    if (!/\s/.test(text[i])) { compact += text[i]; positions.push(i); }
+  }
+  const needle = quote.replace(/\s/g, "");
+  const at = compact.indexOf(needle);
+  if (!needle || at < 0 || compact.indexOf(needle, at + 1) >= 0) return null;
+  return [positions[at], positions[at + needle.length - 1] + 1];
+}
+
+function scrollToHighlight(host) {
+  const target = host.querySelector('.source-selection, [data-selected="true"]');
+  if (target) host.scrollTop += target.getBoundingClientRect().top - host.getBoundingClientRect().top - 70;
+}
+
+function explainHighlight(host, source) {
+  if (!source.snippet && !source.supporting_quote) return;
+  const note = document.createElement("p"); note.className = "source-highlight-note";
+  note.textContent = host.querySelector('.source-selection, [data-selected="true"]')
+    ? "Cited passage highlighted below."
+    : "An exact highlight could not be located in this preview. The cited passage is shown with the answer.";
+  host.prepend(note);
+}
+
+function renderStructuredSource(preview, source) {
+  const wrapper = document.createElement("div");
+  const locator = source.provenance?.locator || {};
+  for (const block of preview.blocks || []) {
+    const loc = block.locator || {};
+    const card = document.createElement("section"); card.className = "source-chunk";
+    const sameItem = locator.body_index != null && loc.body_index === locator.body_index;
+    const quoted = uniqueQuoteRange(block.text, source.supporting_quote || source.snippet);
+    if (sameItem || quoted || (locator.sheet === loc.sheet && locator.row != null && locator.row === loc.row)) {
+      card.classList.add("cited"); card.dataset.selected = "true";
+    }
+    const label = document.createElement("p"); label.className = "meta";
+    label.textContent = loc.sheet ? `${loc.sheet} · Row ${loc.row}`
+      : loc.body_index ? `Document item ${loc.body_index}` : `Row ${loc.row}`;
+    card.append(label, renderSourceText(block.text, source.supporting_quote || source.snippet)); wrapper.append(card);
+  }
+  return wrapper;
+}
+
+function renderLocatedText(preview, source) {
+  const text = preview.text || "Empty document";
+  for (const quote of [source.supporting_quote, source.snippet]) {
+    if (uniqueQuoteRange(text, quote)) return renderSourceText(text, quote);
+  }
+  const locator = source.provenance?.locator || {};
+  const start = Number(locator.source_line_start || locator.source_line);
+  const end = Number(locator.source_line_end || start);
+  if (!Number.isInteger(start) || start < 1 || !Number.isInteger(end) || end < start || start > text.split('\n').length) {
+    return renderSourceText(text, source.snippet);
+  }
+  const lines = text.split('\n');
+  const pre = document.createElement('pre'); pre.className = 'source-text';
+  pre.append(document.createTextNode(lines.slice(0, start - 1).join('\n') + (start > 1 ? '\n' : '')));
+  const mark = document.createElement('mark'); mark.className = 'source-selection';
+  mark.textContent = lines.slice(start - 1, end).join('\n');
+  pre.append(mark, document.createTextNode(end < lines.length ? '\n' + lines.slice(end).join('\n') : ''));
+  return pre;
+}
+
+async function renderInlineSource(host, source) {
+  inlineSourceCleanup();
+  const controller = new AbortController(), urls = new Set();
+  inlineSourceCleanup = () => { controller.abort(); urls.forEach(url => URL.revokeObjectURL(url)); urls.clear(); };
+  const live = () => !controller.signal.aborted && host.isConnected;
+  const request = (path, responseType = "json") => api(path, { responseType, signal: controller.signal });
+  const objectURL = blob => { const url = URL.createObjectURL(blob); urls.add(url); return url; };
+  host.innerHTML = '<div class="source-loading" role="status">Loading cited source…</div>';
+  try {
+    if (!source.document_id || !Number.isInteger(source.version) || source.version < 1) {
+      host.replaceChildren(renderSourceText(source.snippet || "Source version unavailable.", source.supporting_quote));
+      return;
+    }
+    const base = `/documents/${encodeURIComponent(source.document_id)}/versions/${source.version}`;
+    const ext = String(source.filename || "").split(".").pop().toLowerCase();
+    const provenance = source.provenance || {};
+    if (ext === "pdf") {
+      const pages = [...new Set([...(provenance.pages || []), ...(provenance.regions || []).map(r => r.page)])]
+        .filter(p => Number.isInteger(p) && p > 0);
+      if (!pages.length) pages.push(1);
+      const controls = document.createElement("div"); controls.className = "source-pages";
+      const pageHost = document.createElement("div");
+      host.replaceChildren(controls, pageHost);
+      let load = 0;
+      const show = async page => {
+        const sequence = ++load;
+        pageHost.textContent = "Loading page…";
+        try {
+          const blob = await request(`${base}/pages/${page}`, "blob");
+          if (!live() || sequence !== load) return;
+          const frame = document.createElement("div"); frame.className = "source-pdf-page";
+          const image = document.createElement("img"); image.alt = `${source.filename}, page ${page}`;
+          image.onload = () => {
+            URL.revokeObjectURL(image.src); urls.delete(image.src);
+            if (!live() || sequence !== load) return;
+            const first = passageGroups(provenance.regions || [], page)[0];
+            if (first) host.scrollTop = Math.max(0, frame.offsetTop - host.offsetTop + image.clientHeight * first.y - 60);
+          };
+          image.src = objectURL(blob);
+          frame.append(image, passageOverlay(provenance.regions || [], page, provenance.selection_status !== "quote"));
+          pageHost.replaceChildren(frame);
+        } catch (error) {
+          if (live() && sequence === load) pageHost.textContent = "Page preview unavailable. Use Expand source to retry.";
+        }
+      };
+      for (const page of pages) {
+        const button = document.createElement("button"); button.className = "btn btn-sm";
+        button.textContent = `Page ${page}`; button.onclick = () => show(page); controls.append(button);
+      }
+      await show(pages[0]);
+    } else if (["png", "jpg", "jpeg", "webp", "tif", "tiff"].includes(ext)) {
+      const frame = Number(provenance.locator?.frame || 1);
+      const blob = await request(`${base}/frames/${frame}`, "blob");
+      if (!live()) return;
+      const image = document.createElement("img"); image.className = "source-image";
+      image.alt = `${source.filename}, frame ${frame}`; image.src = objectURL(blob);
+      host.replaceChildren(image);
+    } else {
+      const preview = await request(`${base}/preview`);
+      if (!live()) return;
+      const pre = preview.blocks?.length ? renderStructuredSource(preview, source)
+        : renderLocatedText(preview, source);
+      host.replaceChildren(pre);
+      explainHighlight(host, source);
+      if (preview.truncated || preview.blocks_truncated) host.append(document.createTextNode("Preview truncated. Expand source to download the original."));
+      requestAnimationFrame(() => {
+        if (!live()) return;
+        const mark = pre.querySelector("mark, [data-selected]");
+        if (mark) host.scrollTop = Math.max(0, mark.offsetTop - host.offsetTop - 60);
+      });
+    }
+  } catch (error) {
+    if (live()) {
+      const note = document.createElement("p"); note.className = "source-note";
+      note.textContent = "Original preview unavailable. Showing the cited extracted passage.";
+      host.replaceChildren(note, renderSourceText(source.snippet || "", source.supporting_quote));
+    }
+  }
+}
+
 function renderAskDetail(entry) {
+  inlineSourceCleanup();
   const host = $("askdetail");
   if (!entry) {
-    host.innerHTML = `<div class="empty"><b>Nothing asked yet</b>
-      Ask a question on the left, and the answer will appear here with the passages it came from.</div>`;
+    if (pendingQuestion) {
+      host.innerHTML = `<div class="question-bubble">${esc(pendingQuestion)}</div><div class="chat-thinking" role="status"><span class="btnspin" aria-hidden="true"></span>Finding evidence in your knowledge…</div>`;
+      return;
+    }
+    host.innerHTML = `<section class="welcome-panel">
+      <div class="welcome-icon">${ICONS.general}</div>
+      <p class="eyebrow">Start with a question</p><h2>What would you like to understand?</h2>
+      <p>Ask about your documents or explore a general question. Document answers include sources; general knowledge is clearly labeled.</p>
+    </section>`;
     return;
   }
   const tag = askTag(entry);
-  const bannerHTML = tag.cls === "general"
+  const isGeneral = entry.evidence_origin === "general" && entry.answer_status === "general_answer";
+  const bannerHTML = isGeneral
+    ? `<div class="source-banner general">${ICONS.general}<span class="lbl">General knowledge</span><span class="sub">Not based on your documents.</span></div>`
+    : tag.cls === "general"
     ? `<div class="source-banner general">${ICONS.general}
-         <span class="lbl">General knowledge — no matching documents</span></div>`
+         <span class="lbl">Insufficient verified evidence</span></div>`
     : tag.cls === "cache"
       ? `<div class="source-banner cache">${ICONS.cache}
            <span class="lbl">Served from cache</span>
@@ -1438,40 +2415,99 @@ function renderAskDetail(entry) {
     </section>`;
 
   host.innerHTML = `
-    <h2>${esc(entry.question)}</h2>
+    <div class="question-bubble"><span class="sr">Your question: </span>${esc(entry.question)}</div>
+    <p class="eyebrow answer-identity">Agentic AI · Knowledge assistant</p>
+    <div class="answer-tools"><button class="btn btn-sm" id="answerTrace" type="button">View answer trace</button></div>
     ${bannerHTML}
     <div class="answercard">${esc(entry.answer)}</div>
+    ${hasCitations ? `<section class="inline-source" aria-label="Cited source preview">
+      <header><div class="grow"><h3>Source preview</h3><p class="meta" id="inlineSourceMeta"></p></div>
+      <select id="inlineSourceChoice" aria-label="Choose cited source">${citations.map((c, i) =>
+        `<option value="${i}">[${esc(c.source_id || i + 1)}] ${esc(c.filename || "Source")}</option>`).join("")}</select>
+      <button class="btn btn-sm" id="inlineSourceExpand" type="button">Expand source</button></header>
+      <div class="inline-preview" id="inlineSourceBody" aria-busy="true"></div>
+      <blockquote class="inline-quote" id="inlineSourceQuote" hidden></blockquote></section>` : ""}
     ${subq}
-    <section class="section">
-      <div class="rule"></div>
-      <h3>How this answer was produced</h3>
-      <p class="lede">The actual steps taken for this question, in order.</p>
-      <div class="body">${stagesHTML}</div>
-    </section>
     ${citesHTML}
   `;
 
+  $("answerTrace").onclick = () => {
+    openTrace("Answer trace", "The steps taken for this question, in order.");
+    $("traceBody").innerHTML = stagesHTML || '<p class="meta">No trace steps were recorded for this answer.</p>';
+  };
+
+  if (hasCitations) {
+    const previewHost = $("inlineSourceBody");
+    const select = $("inlineSourceChoice");
+    const show = async () => {
+      const source = citations[Number(select.value)];
+      $("inlineSourceMeta").textContent = [source.location, source.version ? `Version ${source.version}` : "",
+        source.source_type === "pdf" ? ({quote: "Exact quoted words highlighted", region: "Approximate source region",
+          missing_quote: "Source page — no verified quote supplied", unmapped_quote: "Quote shown below — exact position unavailable"}[source.provenance?.selection_status] || "Source page preview") : "Source content preview"].filter(Boolean).join(" · ");
+      const quote = $("inlineSourceQuote"); quote.hidden = !source.supporting_quote;
+      quote.textContent = source.supporting_quote || "";
+      $("inlineSourceExpand").onclick = event => openSource(source, event.currentTarget);
+      previewHost.setAttribute("aria-busy", "true");
+      await renderInlineSource(previewHost, source);
+      if (previewHost.isConnected) previewHost.setAttribute("aria-busy", "false");
+    };
+    select.onchange = show;
+    show();
+  }
+
+  host.querySelectorAll(".citation .open-source").forEach((el) => {
+    el.onclick = (event) => {
+      const citation = citations[Number(el.dataset.citation)];
+      if (!citation) return;
+      openSource({
+        document_id: citation.document_id,
+        version: citation.version,
+        source_type: citation.source_type,
+        provenance: citation.provenance || citation.meta || {},
+        location: citation.location,
+        chunk_id: citation.chunk_id,
+        snippet: citation.snippet,
+        supporting_quote: citation.supporting_quote,
+        filename: citation.filename,
+      }, event.currentTarget);
+    };
+  });
   host.querySelectorAll(".citation .jump").forEach((el) => {
     el.onclick = async () => {
       const docId = el.dataset.doc;
       if (!docId) return;
+      const request = openTrace("Document processing trace", "Loading the document's processing steps…");
       try {
         const data = await api("/documents?limit=200");
+        if (request !== traceRequest) return;
         const row = data.documents.find((d) => d.document_id === docId);
-        if (!row || !row.job_id) { toast("That document has no ingestion trace recorded."); return; }
-        navigate("ingest");
-        select(row.document_id, row.job_id);
-      } catch (e) { toast("The trace could not be opened — " + e.message); }
+        if (!row || !row.job_id) throw new Error("No processing trace is available for this document in the loaded library.");
+        const trace = await api(`/jobs/${encodeURIComponent(row.job_id)}/trace`);
+        if (request !== traceRequest) return;
+        $("traceDescription").textContent = trace.document.filename || "Document processing steps";
+        const byStage = Object.fromEntries(trace.stages.map(step => [step.stage, step]));
+        const maxMs = Math.max(1, ...trace.stages.map(step => step.duration_ms || 0));
+        $("traceBody").innerHTML = STAGES.map((stage, index) => stageCard(stage, index, byStage[stage.key], trace, !TERMINAL.has(trace.job.status), maxMs)).join("");
+      } catch (e) {
+        if (request === traceRequest) $("traceBody").innerHTML = `<div class="errbox" role="alert">${esc(e.message)} Close this panel and try again.</div>`;
+      }
     };
   });
 }
 
 async function askQuestion() {
+  if ($("askbtn").disabled) return;
+  const epoch = accountEpoch;
   const qEl = $("askq");
   const question = qEl.value.trim();
   if (!question) { qEl.focus(); return; }
   const topK = Math.max(1, Math.min(50, Number($("asktopk").value) || 10));
   const btn = $("askbtn");
+  const view = ++askViewVersion;
+  pendingQuestion = question;
+  askSelected = -1;
+  renderAskDetail(null);
+  $("askdetail").scrollIntoView({ block: "start" });
   btn.disabled = true; btn.innerHTML = '<span class="btnspin"></span>Asking…';
   try {
     // One call: /ask checks the semantic cache FIRST and only retrieves+reranks
@@ -1485,26 +2521,201 @@ async function askQuestion() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, top_k: topK }),
     });
+    if (epoch !== accountEpoch) return;
+    pendingQuestion = "";
     askHistory.unshift(result);
     askHistory = askHistory.slice(0, 30);
-    askSelected = 0;
+    askSelected = view === askViewVersion ? 0 : askSelected + 1;
     saveAskHistory();
     renderAskHistList();
-    renderAskDetail(result);
-    qEl.value = "";
+    if (view === askViewVersion) renderAskDetail(result);
+    if (qEl.value.trim() === question) qEl.value = "";
   } catch (e) {
-    toast("No answer was returned — " + e.message);
+    if (epoch === accountEpoch) {
+      pendingQuestion = "";
+      if (view === askViewVersion) {
+        $("askdetail").innerHTML = `<div class="question-bubble">${esc(question)}</div><div class="errbox" role="alert">${esc(e.message)} Your question is still in the message box. Try sending it again.</div>`;
+      }
+    }
   } finally {
-    btn.disabled = false; btn.textContent = "Ask";
+    if (epoch === accountEpoch) { btn.disabled = false; btn.textContent = "Send question"; }
   }
 }
 $("askbtn").onclick = askQuestion;
+$("newQuestion").onclick = () => {
+  if ($("askbtn").disabled) { $("askq").focus(); return; }
+  askViewVersion += 1;
+  askSelected = -1;
+  $("askq").value = "";
+  renderAskHistList();
+  renderAskDetail(null);
+  $("askq").focus();
+};
+$("mobileNewQuestion").onclick = () => $("newQuestion").click();
+$("mobileQuestionHistory").onchange = event => {
+  if (event.target.value === "") return;
+  askViewVersion += 1;
+  askSelected = Number(event.target.value);
+  renderAskHistList();
+  renderAskDetail(askHistory[askSelected]);
+};
 $("askq").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); askQuestion(); }
 });
 
+function openTrace(title, description) {
+  const request = ++traceRequest;
+  $("traceTitle").textContent = title;
+  $("traceDescription").textContent = description;
+  $("traceBody").innerHTML = '<p class="meta" role="status">Loading trace…</p>';
+  $("traceDialog").showModal();
+  $("traceBody").scrollTop = 0;
+  $("traceClose").focus();
+  return request;
+}
+function closeTrace() {
+  traceRequest += 1;
+  $("traceDialog").close();
+  $("traceBody").replaceChildren();
+}
+$("traceClose").onclick = closeTrace;
+$("traceDialog").addEventListener("cancel", event => { event.preventDefault(); closeTrace(); });
+
+// ------------------------------------------------------------ workspace team --
+
+async function loadTeam() {
+  if (!workspace?.manage_team) return;
+  const request = ++teamRequest;
+  $("teamOrganization").textContent = workspace.organization;
+  $("teamDirectory").innerHTML = '<p class="page-loading" role="status">Loading your team…</p>';
+  $("teamPrevious").disabled = true;
+  $("teamNext").disabled = true;
+  try {
+    const data = await api(`/onboarding/members?limit=50&offset=${teamOffset}`);
+    if (request !== teamRequest) return;
+    if (!data.members.length && teamOffset > 0) { teamOffset = Math.max(0, teamOffset - 50); return loadTeam(); }
+    $("teamTotal").textContent = data.total;
+    $("teamPageInfo").textContent = data.total ? `${teamOffset + 1}–${teamOffset + data.members.length} of ${data.total} team members` : "No accounts to display";
+    $("teamPrevious").disabled = teamOffset === 0;
+    $("teamNext").disabled = teamOffset + data.members.length >= data.total;
+    $("teamDirectory").innerHTML = data.members.length ? `<div class="tablescroll" tabindex="0" role="region" aria-label="Team directory"><table class="team-table">
+      <caption class="sr">Accounts in your organization</caption>
+      <thead><tr><th scope="col">Team member</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Added</th><th scope="col">Actions</th></tr></thead>
+      <tbody>${data.members.map(member => {
+        const date = new Date(member.created_at);
+        const joined = Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        return `<tr><td><div class="member-cell"><span class="avatar" aria-hidden="true">${esc(member.email.slice(0, 2).toUpperCase())}</span><span class="member-email">${esc(member.email)}${member.email === workspace.email ? ' <span class="meta">(you)</span>' : ''}</span></div></td>
+          <td>${esc(ROLE_LABELS[member.role] || member.role)}</td>
+          <td><span class="status ${member.status === 'active' ? 'ok' : 'pend'}">${esc(member.status)}</span></td><td class="meta member-joined">${esc(joined)}</td>
+          <td>${member.email === workspace.email ? '<span class="meta">Your account</span>' : `<button class="btn btn-sm btn-danger delete-member" type="button" data-member="${esc(member.id)}" aria-label="Delete account for ${esc(member.email)}">Delete</button>`}</td></tr>`;
+      }).join("")}</tbody></table></div>` : '<div class="empty"><b>Build your workspace team</b>Add a colleague to get started.</div>';
+    $("teamDirectory").querySelectorAll(".delete-member").forEach(button => {
+      button.onclick = () => {
+        memberToDelete = data.members.find(member => member.id === button.dataset.member);
+        $("deleteMemberDescription").textContent = `Remove ${memberToDelete.email} from ${workspace.organization}?`;
+        $("deleteMemberError").textContent = "";
+        $("deleteMemberConfirm").disabled = false;
+        $("deleteMemberCancel").disabled = false;
+        $("deleteMemberConfirm").textContent = "Delete account";
+        $("deleteMemberDialog").showModal();
+        $("deleteMemberCancel").focus();
+      };
+    });
+  } catch (e) {
+    if (request !== teamRequest || e.name === "AbortError") return;
+    $("teamDirectory").innerHTML = `<div class="empty"><b>Your team could not be loaded</b><p>${esc(e.message)}</p><button class="btn" id="retryTeam" type="button">Try again</button></div>`;
+    $("retryTeam").onclick = loadTeam;
+  }
+}
+$("teamPrevious").onclick = () => { teamOffset = Math.max(0, teamOffset - 50); loadTeam(); };
+$("teamNext").onclick = () => { teamOffset += 50; loadTeam(); };
+const roleDescriptions = {
+  member: "Can ask questions and add documents.",
+  viewer: "Can ask questions and read documents they have access to. Cannot upload documents or manage the team.",
+  admin: "Can add team members, upload documents, and delete documents within the organization's access rules.",
+};
+$("memberRole").onchange = () => { $("memberRoleHelp").textContent = roleDescriptions[$("memberRole").value]; };
+$("addMember").onclick = () => {
+  $("memberForm").reset();
+  $("memberError").textContent = "";
+  $("memberRoleHelp").textContent = roleDescriptions.member;
+  $("memberSubmit").disabled = false;
+  $("memberSubmit").textContent = "Create account";
+  $("memberDialog").showModal();
+  $("memberEmail").focus();
+};
+$("memberCancel").onclick = () => $("memberDialog").close();
+$("memberDialog").addEventListener("close", () => {
+  $("memberPassword").value = "";
+});
+$("memberDialog").addEventListener("cancel", event => {
+  if ($("memberSubmit").disabled) event.preventDefault();
+});
+$("memberForm").onsubmit = async event => {
+  event.preventDefault();
+  if ($("memberSubmit").disabled || !$("memberForm").reportValidity()) return;
+  const epoch = accountEpoch;
+  const email = $("memberEmail").value.trim();
+  $("memberError").textContent = "";
+  $("memberSubmit").disabled = true;
+  $("memberCancel").disabled = true;
+  $("memberSubmit").textContent = "Creating account…";
+  try {
+    await api("/onboarding/members", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, role: $("memberRole").value, password: $("memberPassword").value }),
+    });
+    if (epoch !== accountEpoch) return;
+    $("memberDialog").close();
+    $("memberForm").reset();
+    toast(`${email}: account created in ${workspace.organization}.`);
+    await loadTeam();
+  } catch (e) {
+    if (epoch !== accountEpoch || e.name === "AbortError") return;
+    $("memberError").textContent = e.message;
+  } finally {
+    if (epoch === accountEpoch) {
+      $("memberSubmit").disabled = false;
+      $("memberCancel").disabled = false;
+      $("memberSubmit").textContent = "Create account";
+    }
+  }
+};
+
+$("deleteMemberCancel").onclick = () => $("deleteMemberDialog").close();
+$("deleteMemberDialog").addEventListener("cancel", event => {
+  if ($("deleteMemberConfirm").disabled) event.preventDefault();
+});
+$("deleteMemberForm").onsubmit = async event => {
+  event.preventDefault();
+  if (!memberToDelete || $("deleteMemberConfirm").disabled) return;
+  const epoch = accountEpoch;
+  const member = memberToDelete;
+  $("deleteMemberConfirm").disabled = true;
+  $("deleteMemberCancel").disabled = true;
+  $("deleteMemberConfirm").textContent = "Deleting…";
+  try {
+    await api(`/onboarding/members/${encodeURIComponent(member.id)}`, { method: "DELETE" });
+    if (epoch !== accountEpoch) return;
+    $("deleteMemberDialog").close();
+    memberToDelete = null;
+    toast(`${member.email}: account deleted.`);
+    await loadTeam();
+    $("addMember").focus();
+  } catch (e) {
+    if (epoch === accountEpoch) $("deleteMemberError").textContent = e.message;
+  } finally {
+    if (epoch === accountEpoch) {
+      $("deleteMemberConfirm").disabled = false;
+      $("deleteMemberCancel").disabled = false;
+      $("deleteMemberConfirm").textContent = "Delete account";
+    }
+  }
+};
+
 // -------------------------------------------------------------------- boot --
 
+const libraryWelcomeHTML = $("detail").innerHTML;
 if (token) { enterApp(); } else { showGate(""); }
 </script>
 </body>

@@ -1,14 +1,19 @@
-"""MetadataStore port: tenants, users, documents, jobs, chunks, audit.
+"""MetadataStore port: tenants, users, documents, jobs, chunks, audit."""
 
-Local adapter = SQLite. Production adapter = PostgreSQL. Both implement this
-interface, so no calling code changes on flip.
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
-from app.shared.domain.models import AuthUser, ChunkRecord, Document, Job, JobEvent, Principal
+from app.shared.domain.models import (
+    AuthUser,
+    ChunkRecord,
+    Document,
+    DocumentVersion,
+    Job,
+    JobEvent,
+    Principal,
+)
 
 
 class EmailAlreadyRegistered(Exception):
@@ -21,7 +26,29 @@ class EmailAlreadyRegistered(Exception):
     cannot close."""
 
 
+class IngestionConflict(ValueError):
+    pass
+
+
 class MetadataStore(ABC):
+    @abstractmethod
+    def update_document_access(
+        self, tenant_id: str, document_id: str, visibility: str, scope: str
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_gateway_config(self, base_url: str, api_key: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_gateway_config(self) -> tuple[str, str] | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def corpus_epoch(self, tenant_id: str) -> str:
+        raise NotImplementedError
+
     """Port for tenant/user/document/job/chunk/audit persistence."""
 
     @abstractmethod
@@ -33,6 +60,22 @@ class MetadataStore(ABC):
         """Create a tenant and return its new tenant_id."""
 
     @abstractmethod
+    def get_workspace_identity(self, principal: Principal) -> dict[str, Any]:
+        """Return the authenticated account's email and organization name."""
+
+    @abstractmethod
+    def list_tenant_members(self, tenant_id: str, limit: int, offset: int) -> dict[str, Any]:
+        """Return a bounded member directory without credentials, scoped to one tenant."""
+
+    @abstractmethod
+    def delete_tenant_member(self, principal: Principal, member_id: str) -> str:
+        """Revoke a member account atomically, retaining document ownership and audit history.
+
+        Raises PermissionError for an inactive actor, ValueError for self-deletion,
+        and LookupError for a missing member in this tenant. Returns the former email.
+        """
+
+    @abstractmethod
     def create_user(self, tenant_id: str, email: str, role: str, token: str) -> str:
         """Create a bearer-token user in `tenant_id` and return the new user_id.
         `token` is the raw token; it is hashed before being stored, never in
@@ -40,7 +83,7 @@ class MetadataStore(ABC):
         recovered later."""
 
     @abstractmethod
-    def get_principal_by_token(self, token: str) -> Optional[Principal]:
+    def get_principal_by_token(self, token: str) -> Principal | None:
         """Resolve a raw bearer token (hashed internally before lookup) to its
         Principal, or None if unknown/inactive."""
 
@@ -50,7 +93,7 @@ class MetadataStore(ABC):
         e.g. reissued on POST /onboarding/login, invalidating the previous one."""
 
     @abstractmethod
-    def get_user_by_email(self, email: str) -> Optional[AuthUser]:
+    def get_user_by_email(self, email: str) -> AuthUser | None:
         """Look up a user by email, across ALL tenants (onboarding login has no
         tenant_id up front -- email is the only key it has).
 
@@ -62,7 +105,12 @@ class MetadataStore(ABC):
 
     @abstractmethod
     def create_user_with_password(
-        self, tenant_id: str, email: str, role: str, token: str, password_hash: str,
+        self,
+        tenant_id: str,
+        email: str,
+        role: str,
+        token: str,
+        password_hash: str,
     ) -> str:
         """Like create_user (token hashed before storage), but also persists
         password_hash so the account can authenticate via POST /onboarding/login
@@ -75,7 +123,7 @@ class MetadataStore(ABC):
         before either commits, so the store itself is the actual backstop."""
 
     @abstractmethod
-    def get_system_config(self, key: str) -> Optional[str]:
+    def get_system_config(self, key: str) -> str | None:
         """Current value for `key` (e.g. 'litellm_base_url'), or None if never set."""
 
     @abstractmethod
@@ -83,55 +131,180 @@ class MetadataStore(ABC):
         """Upsert `key` = `value`."""
 
     @abstractmethod
-    def get_document_by_hash(self, tenant_id: str, sha256: str) -> Optional[Document]:
-        """Look up a tenant's document by content hash (dedup check on ingest)."""
+    def get_document_by_hash(
+        self, tenant_id: str, sha256: str, owner_user_id: str
+    ) -> Document | None:
+        raise NotImplementedError
 
     @abstractmethod
     def create_document(self, doc: Document) -> None:
         """Persist a new document row."""
 
     @abstractmethod
-    def get_document(self, tenant_id: str, document_id: str) -> Optional[Document]:
+    def get_document(self, tenant_id: str, document_id: str) -> Document | None:
         """Fetch a document by id, or None if not found."""
+
+    @abstractmethod
+    def get_document_by_filename(
+        self, tenant_id: str, owner_user_id: str, filename: str
+    ) -> Document | None:
+        """The caller's own newest document with this filename, or None.
+
+        This is how `POST /ingest` decides "is this an update of something I
+        already have?" when no explicit `document_id` was supplied.
+
+        Scoped to `owner_user_id` deliberately, and NOT widened to admins or to
+        `scope='global'` the way `get_document` is. Two reasons, both
+        correctness rather than tidiness: a shared filename like `report.pdf`
+        is entirely unremarkable, so a tenant-wide match would let one member
+        silently overwrite a colleague's private document; and even returning
+        it would leak the existence of a document the caller may not read. An
+        admin who genuinely means to replace someone else's document says so by
+        passing `document_id` explicitly.
+        """
 
     @abstractmethod
     def set_document_metadata(
         self, tenant_id: str, document_id: str, metadata: dict[str, Any]
     ) -> None:
-        """Persist the extracted metadata (author/date/topics/entities) for a document."""
+        """Persist the extracted metadata (author/date/topics/entities) for a document.
+        Also stamps `updated_at` -- this runs as part of a pipeline run, so the
+        document genuinely did change."""
+
+    @abstractmethod
+    def update_document_content(
+        self,
+        tenant_id: str,
+        document_id: str,
+        *,
+        blob_path: str,
+        content_sha256: str,
+        mime: str,
+        source_type: str,
+        filename: str,
+        visibility: str,
+        scope: str,
+    ) -> int:
+        """Point an existing document at newly-uploaded bytes; return its new version.
+
+        Bumps `version`, stamps `updated_at`, and overwrites the storage/identity
+        fields. `source_type` and `filename` are included because a replacement
+        may legitimately arrive in a different format (`notes.md` -> `notes.pdf`).
+
+        This only rewrites the `documents` row. The chunks and vectors still
+        describe the OLD bytes until the job this caller enqueues runs the
+        pipeline -- which is why the API creates the job in the same request.
+        """
+
+    @abstractmethod
+    def create_document_with_job(
+        self, doc: Document, job: Job, initial_version: DocumentVersion | None = None
+    ) -> None:
+        """Atomically insert a new document and its first ingestion job.
+
+        The job is pinned to `doc`'s own `blob_path`/`content_sha256`/`version`
+        at insert time (see `Job`'s docstring) -- one transaction, so a crash
+        between the two writes can never leave a document with no job queued
+        to index it."""
+
+    @abstractmethod
+    def update_document_content_and_queue(
+        self,
+        tenant_id: str,
+        document_id: str,
+        *,
+        blob_path: str,
+        content_sha256: str,
+        mime: str,
+        source_type: str,
+        filename: str,
+        visibility: str,
+        scope: str,
+        job: Job,
+        uploaded_by: str,
+        byte_size: int,
+        expected_version: int | None = None,
+    ) -> int:
+        """Atomically repoint a document at new bytes, queue the re-index job
+        (pinned to exactly these new bytes), and append the version-history
+        row for them. One transaction covering all three writes, unlike the
+        sequential `update_document_content` + `create_job` +
+        `add_document_version` calls this replaces at the one call site
+        (`app.api.ingest_routes._update_document`) that needs all three to
+        succeed or fail together. Returns the new version number."""
+
+    @abstractmethod
+    def has_pending_job(self, tenant_id: str, document_id: str) -> bool:
+        """True if a job for this document is currently queued or running.
+
+        Single-flight guard: callers refuse a second update/reprocess while
+        one is already in flight, so at most one job per document can ever be
+        running at once -- see `app.api.ingest_routes`' update and reprocess
+        routes."""
+
+    @abstractmethod
+    def add_document_version(self, version: DocumentVersion) -> None:
+        """Append one content-version history row."""
+
+    @abstractmethod
+    def list_document_versions(self, tenant_id: str, document_id: str) -> list[DocumentVersion]:
+        """A document's content versions, newest first."""
+
+    @abstractmethod
+    def get_document_version(
+        self, tenant_id: str, document_id: str, version: int
+    ) -> DocumentVersion | None:
+        """Fetch one immutable content version, or None."""
+
+    @abstractmethod
+    def set_version_delta(self, job_id: str, delta: dict[str, Any]) -> None:
+        """Record how the chunk set changed, against the version row `job_id` created.
+
+        A no-op when no version row references this job -- `/reprocess` re-runs
+        the pipeline over unchanged bytes and so creates no new version, but it
+        still produces a delta worth seeing in the job trace. Callers must treat
+        this as observability, never correctness (see `app.ingest.pipeline.runner`).
+        """
+
+    @abstractmethod
+    def count_blob_references(self, blob_path: str, exclude_document_id: str) -> int:
+        """How many OTHER documents (live rows or version history) still point at
+        `blob_path`.
+
+        Blobs are content-addressed, so identical bytes uploaded twice resolve to
+        one file on disk. Deleting a document must therefore not unlink a blob
+        another document still needs -- and versioning makes that reachable: once
+        v1's bytes are no longer any document's *current* hash, the ingest dedup
+        check stops matching them, so the same bytes can legitimately come back
+        as a brand-new document while the old version row still references them.
+        """
 
     @abstractmethod
     def delete_document(self, tenant_id: str, document_id: str) -> None:
-        """Delete a document row (chunk/vector/blob cleanup is the caller's job)."""
-
-    @abstractmethod
-    def promote_document(
-        self, tenant_id: str, document_id: str, user_id: str,
-        message: str | None = None, config: dict | None = None,
-    ) -> Optional[Document]:
-        """Mark an indexed document as promoted and return it, if it exists."""
-
-    @abstractmethod
-    def unpromote_document(
-        self, tenant_id: str, document_id: str
-    ) -> Optional[Document]:
-        """Remove a document from active promoted knowledge without deleting it."""
+        """Delete a document row and its version history (chunk/vector/blob
+        cleanup is the caller's job)."""
 
     @abstractmethod
     def create_job(self, job: Job) -> None:
         """Persist a new ingestion job row."""
 
     @abstractmethod
-    def get_job(self, tenant_id: str, job_id: str) -> Optional[Job]:
+    def get_job(self, tenant_id: str, job_id: str) -> Job | None:
         """Fetch a job by id, or None if not found."""
-
-    @abstractmethod
-    def get_latest_job(self, tenant_id: str, document_id: str) -> Optional[Job]:
-        """Fetch the newest ingestion job for a document, or None."""
 
     @abstractmethod
     def set_route_summary(self, job_id: str, summary: dict[str, Any]) -> None:
         """Persist the per-element routing summary produced during parsing."""
+
+    @abstractmethod
+    def get_extraction_artifact(self, job_id: str, content_sha256: str, key: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def put_extraction_artifact(
+        self, job_id: str, content_sha256: str, key: str, artifact: dict
+    ) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     def record_job_event(self, event: JobEvent) -> None:
@@ -144,7 +317,7 @@ class MetadataStore(ABC):
     @abstractmethod
     def list_documents(
         self, tenant_id: str, limit: int = 50, offset: int = 0
-    ) -> list[tuple[Document, Optional[Job]]]:
+    ) -> list[tuple[Document, Job | None]]:
         """Documents readable from this tenant (own tenant, plus scope=global),
         newest first, each paired with its most recent ingestion job (None if the
         job row has since been deleted). Visibility/ACL filtering is the caller's
@@ -162,7 +335,11 @@ class MetadataStore(ABC):
 
     @abstractmethod
     def write_audit(
-        self, tenant_id: str, user_id: str, action: str, target: str,
-        meta: Optional[dict[str, Any]] = None,
+        self,
+        tenant_id: str,
+        user_id: str,
+        action: str,
+        target: str,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         """Append one audit-log row for `action` taken by `user_id` on `target`."""

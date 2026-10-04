@@ -6,6 +6,7 @@ and then **auto-attached to every log line** within that scope — so you can gr
 a single id and see the whole lifecycle: request -> ingest -> job -> stages ->
 LLM calls -> done.
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -14,17 +15,18 @@ import logging
 import sys
 from contextlib import contextmanager
 
-# standard LogRecord attributes we don't duplicate into the JSON body
-_STD = set(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
-) | {"message", "asctime", "taskName"}
+_STD = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
-_ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("log_ctx", default={})
+_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("log_ctx", default=None)
 
 
 def bind(**fields):
     """Merge fields into the current log context; returns a reset token."""
-    merged = {**_ctx.get(), **{k: v for k, v in fields.items() if v is not None}}
+    merged = {**(_ctx.get() or {}), **{k: v for k, v in fields.items() if v is not None}}
     return _ctx.set(merged)
 
 
@@ -50,7 +52,7 @@ class _ContextFilter(logging.Filter):
     """Copies the current log context's fields onto every LogRecord that doesn't already have them."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        for k, v in _ctx.get().items():
+        for k, v in (_ctx.get() or {}).items():
             if not hasattr(record, k):
                 setattr(record, k, v)
         return True

@@ -19,6 +19,7 @@ failure (gateway error, unparseable response), this returns no sub-questions
 rather than raising, so a decomposition hiccup never breaks the answer -- it
 just falls back to a normal single-pass retrieval.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,11 +34,6 @@ MAX_SUB_QUESTIONS = 4
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
-# Free, rule-based surface signals of a genuinely multi-part question: an
-# explicit comparison/relation between two things, or multiple questions
-# joined into one. Deliberately simple and cheap (no NLP) -- false positives
-# only cost one wasted decomposition call (which can itself say "no"); false
-# negatives just mean a question stays single-pass, today's existing behavior.
 _MULTI_PART_RE = re.compile(
     r"\b(compare[sd]?|versus|vs\.?|difference(?:s)? between|relate[sd]?\s+to|"
     r"relationship\s+between|both\b.*\band\b|as\s+well\s+as)\b",
@@ -65,8 +61,10 @@ def _parse_response(raw: str) -> list[str]:
     subs = data.get("sub_questions")
     if not isinstance(subs, list):
         raise ValueError("sub_questions is not a list")
-    cleaned_subs = [str(s).strip() for s in subs if isinstance(s, (str, int, float)) and str(s).strip()]
-    return cleaned_subs[:MAX_SUB_QUESTIONS]
+    cleaned_subs = list(
+        dict.fromkeys(s.strip() for s in subs if isinstance(s, str) and 0 < len(s.strip()) <= 4096)
+    )
+    return cleaned_subs[:MAX_SUB_QUESTIONS] if len(cleaned_subs) >= 2 else []
 
 
 def decompose_question(gateway, model: str, question: str) -> list[str]:
@@ -82,7 +80,11 @@ def decompose_question(gateway, model: str, question: str) -> list[str]:
         raw = gateway.chat(messages, model=model, temperature=0)
         return _parse_response(raw)
     except Exception as e:  # noqa: BLE001 - deliberately broad: never fail the query
-        log.warning("query decomposition failed, using single-pass retrieval", extra={
-            "event": "query_decompose_failed", "error": str(e)[:200],
-        })
+        log.warning(
+            "query decomposition failed, using single-pass retrieval",
+            extra={
+                "event": "query_decompose_failed",
+                "error": str(e)[:200],
+            },
+        )
         return []

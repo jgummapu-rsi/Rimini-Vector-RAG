@@ -1,6 +1,8 @@
 """Document metadata extraction: best-effort, never raises."""
-from app.shared.gateway.client import GatewayError
+
+from app.ingest.pipeline import metadata_extract
 from app.ingest.pipeline.metadata_extract import TEXT_BUDGET_TOKENS, extract_metadata
+from app.shared.gateway.client import GatewayError
 
 
 class _StubGateway:
@@ -17,21 +19,27 @@ class _StubGateway:
 
 
 def test_valid_json_response_is_parsed():
-    gw = _StubGateway(response=(
-        '{"author": "Priya", "date": "2024-03-31", '
-        '"topics": ["period close", "FI sub-ledger"], "entities": ["GR/IR", "SAP FI"]}'
-    ))
+    gw = _StubGateway(
+        response=(
+            '{"author": "Priya", "date": "2024-03-31", '
+            '"topics": ["period close", "FI sub-ledger"], "entities": ["GR/IR", "SAP FI"]}'
+        )
+    )
     result = extract_metadata(gw, "gpt-5-nano", "GR/IR clearing entries must post by period close.")
     assert result == {
-        "author": "Priya", "date": "2024-03-31",
-        "topics": ["period close", "FI sub-ledger"], "entities": ["GR/IR", "SAP FI"],
+        "author": "Priya",
+        "date": "2024-03-31",
+        "topics": ["period close", "FI sub-ledger"],
+        "entities": ["GR/IR", "SAP FI"],
     }
     assert gw.calls[0]["model"] == "gpt-5-nano"
     assert gw.calls[0]["temperature"] == 0
 
 
 def test_response_wrapped_in_code_fence_is_parsed():
-    gw = _StubGateway(response='```json\n{"author": null, "date": null, "topics": [], "entities": []}\n```')
+    gw = _StubGateway(
+        response='```json\n{"author": null, "date": null, "topics": [], "entities": []}\n```'
+    )
     result = extract_metadata(gw, "gpt-5-nano", "some text")
     assert result == {"author": None, "date": None, "topics": [], "entities": []}
 
@@ -63,7 +71,28 @@ def test_empty_text_short_circuits_without_calling_gateway():
 
 def test_oversized_input_is_truncated_before_calling_chat():
     gw = _StubGateway(response='{"author": null, "date": null, "topics": [], "entities": []}')
-    huge_text = "word " * 20000   # far more than TEXT_BUDGET_TOKENS
+    huge_text = "word " * 20000
     extract_metadata(gw, "gpt-5-nano", huge_text)
     sent = gw.calls[0]["messages"][-1]["content"]
     assert len(sent) < len(huge_text)
+
+
+def test_truncate_to_budget_never_tokenizes_more_than_the_char_ceiling(monkeypatch):
+    """Finding 1.10c: a megabyte-scale document must not be handed whole to
+    count_tokens just to measure "is this over budget" -- the char-based
+    pre-cut has to bound every count_tokens call's input length."""
+    seen_lengths = []
+    real_count = metadata_extract.count_tokens
+
+    def _spy(text):
+        seen_lengths.append(len(text))
+        return real_count(text)
+
+    monkeypatch.setattr(metadata_extract, "count_tokens", _spy)
+
+    huge_text = "word " * 2_000_000
+    metadata_extract._truncate_to_budget(huge_text, TEXT_BUDGET_TOKENS)
+
+    char_ceiling = TEXT_BUDGET_TOKENS * metadata_extract._CHAR_HEADROOM_PER_TOKEN
+    assert seen_lengths
+    assert all(n <= char_ceiling for n in seen_lengths)

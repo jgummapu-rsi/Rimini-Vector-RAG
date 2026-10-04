@@ -2,6 +2,7 @@
 
 Local adapter = local filesystem. Production adapter = Azure Blob Storage.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -17,6 +18,14 @@ class BlobStore(ABC):
     @abstractmethod
     def get(self, blob_path: str) -> bytes:
         """Fetch the raw bytes previously stored at `blob_path`."""
+
+    @abstractmethod
+    def size(self, blob_path: str) -> int:
+        """Return the stored object's byte length."""
+
+    @abstractmethod
+    def get_range(self, blob_path: str, start: int, end: int) -> bytes:
+        """Fetch the inclusive byte range ``start..end``."""
 
     @abstractmethod
     def delete(self, blob_path: str) -> None:

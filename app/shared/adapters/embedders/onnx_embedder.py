@@ -16,21 +16,40 @@ HNSW `vector_cosine_ops` index to behave like cosine similarity).
 
 Loading is lazy and process-cached, exactly like MiniLMEmbedder.
 """
+
 from __future__ import annotations
 
-from app.shared.ports.embedder import Embedder
+from threading import Lock
 
-# process-level cache: (repo, max_length) -> (session, tokenizer, input_names, output_names)
+import numpy as np
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer
+
+from app.ingest.pipeline.tokens import count_tokens_for
+from app.shared.adapters.embedders.profile import tokenizer_identity
+from app.shared.domain.embedding import EmbeddingProfile, validate_vectors
+from app.shared.execution import check_execution, run_onnx
+from app.shared.model_loading import model_load_lock, require_startup_loading
+from app.shared.ports.embedder import Embedder
+from app.shared.runtime import ensure_native_runtime
+
 _MODEL_CACHE: dict = {}
+_LOAD_LOCK = Lock()
 
 
 class OnnxEmbedder(Embedder):
     """Configurable local ONNX embedder for any HF model with an ONNX export."""
 
     def __init__(
-        self, repo: str, dim: int, *,
-        pooling: str = "cls", query_instruction: str = "",
-        max_length: int = 512, normalize: bool = True, batch_size: int = 32,
+        self,
+        repo: str,
+        dim: int,
+        *,
+        pooling: str = "cls",
+        query_instruction: str = "",
+        max_length: int = 512,
+        normalize: bool = True,
+        batch_size: int = 32,
     ):
         """Configure the HF `repo`, output `dim`, pooling strategy, optional
         asymmetric `query_instruction`, truncation `max_length`, whether to
@@ -43,15 +62,34 @@ class OnnxEmbedder(Embedder):
         self._query_instruction = query_instruction
         self._max_length = max_length
         self._normalize = normalize
-        # Memory bound on one forward pass -- see the note in
-        # app.shared.adapters.embedders.minilm. Lower default than MiniLM's because
-        # this class targets bigger models (bge-base: 512 tokens, 768 dims,
-        # so a row of hidden state is ~4x MiniLM's).
+
         self._batch = max(1, batch_size)
         self._sess = None
         self._tok = None
         self._input_names: set[str] = set()
         self._output_names: list[str] = []
+        self._profile = None
+
+    @property
+    def profile(self) -> EmbeddingProfile:
+        if self._profile is None:
+            require_startup_loading()
+            revision, tokenizer = tokenizer_identity(self._repo)
+            self._profile = EmbeddingProfile(
+                "onnx",
+                self._repo,
+                revision,
+                tokenizer,
+                self.dim,
+                self.max_tokens,
+                self._pooling,
+                self._normalize,
+                self._query_instruction,
+            )
+        return self._profile
+
+    def embed_query(self, text: str) -> list[float]:
+        return validate_vectors(self.embed([text], is_query=True), 1, self.dim)[0]
 
     @property
     def dim(self) -> int:
@@ -67,38 +105,46 @@ class OnnxEmbedder(Embedder):
         """True length of `text` in THIS model's own tokenizer (e.g. bge's
         WordPiece vocab, not MiniLM's -- different vocab, different counts),
         via the shared per-repo counting cache in app.ingest.pipeline.tokens."""
-        from app.ingest.pipeline.tokens import count_tokens_for
-        return count_tokens_for(self._repo, text)
+        return count_tokens_for(self._repo, text, revision=self.profile.revision)
 
     def _ensure_loaded(self) -> None:
         """Load the ONNX session and tokenizer once, sharing the process-level cache."""
+        check_execution()
         if self._sess is not None:
             return
-        key = (self._repo, self._max_length)
-        cached = _MODEL_CACHE.get(key)
-        if cached is None:
-            cached = self._load()
-            _MODEL_CACHE[key] = cached
-        self._sess, self._tok, self._input_names, self._output_names = cached
+        with model_load_lock(_LOAD_LOCK):
+            key = (self._repo, self.profile.revision, self._max_length)
+            cached = _MODEL_CACHE.get(key)
+            if cached is None:
+                require_startup_loading()
+                cached = self._load()
+                _MODEL_CACHE[key] = cached
+            self._sess, self._tok, self._input_names, self._output_names = cached
+
+    def prepare(self) -> None:
+        self._ensure_loaded()
+        self.embed_query("startup validation")
 
     def _load(self):
         """Download (if needed) and construct the ONNX session + tokenizer."""
-        from app.shared.runtime import ensure_native_runtime
         ensure_native_runtime()
 
-        import onnxruntime as ort
-        from huggingface_hub import hf_hub_download
-        from tokenizers import Tokenizer
+        # Native DLL discovery must happen before importing ONNX Runtime.
+        import onnxruntime as ort  # noqa: PLC0415
 
-        model_path = hf_hub_download(self._repo, "onnx/model.onnx")
-        tok_path = hf_hub_download(self._repo, "tokenizer.json")
+        model_path = hf_hub_download(self._repo, "onnx/model.onnx", revision=self.profile.revision)
+        tok_path = hf_hub_download(self._repo, "tokenizer.json", revision=self.profile.revision)
 
         tok = Tokenizer.from_file(tok_path)
         tok.enable_truncation(max_length=self._max_length)
         tok.enable_padding()
         sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        return (sess, tok, {i.name for i in sess.get_inputs()},
-                [o.name for o in sess.get_outputs()])
+        return (
+            sess,
+            tok,
+            {i.name for i in sess.get_inputs()},
+            [o.name for o in sess.get_outputs()],
+        )
 
     def embed(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
         """Return one embedding per text; `is_query=True` applies the asymmetric
@@ -109,20 +155,17 @@ class OnnxEmbedder(Embedder):
 
         if is_query and self._query_instruction:
             texts = [self._query_instruction + t for t in texts]
+        self.validate_inputs(texts)
 
         out: list[list[float]] = []
         for i in range(0, len(texts), self._batch):
-            out.extend(self._embed_batch(texts[i:i + self._batch]))
+            check_execution()
+            out.extend(self._embed_batch(texts[i : i + self._batch]))
         return out
-
-    def embed_query(self, texts: list[str]) -> list[list[float]]:
-        """Embed queries with the configured asymmetric retrieval instruction."""
-        return self.embed(texts, is_query=True)
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """One forward pass. The query instruction (if any) is already applied
         by `embed` -- this operates on final text."""
-        import numpy as np
 
         encs = self._tok.encode_batch(texts)
         ids = np.array([e.ids for e in encs], dtype=np.int64)
@@ -132,10 +175,7 @@ class OnnxEmbedder(Embedder):
         if "token_type_ids" in self._input_names:
             feeds["token_type_ids"] = np.zeros_like(ids)
 
-        # last_hidden_state: (batch, seq, dim). Prefer the named output; fall back
-        # to the first output (Xenova feature-extraction ONNX emits token embeddings,
-        # pooling/normalization are done here, not inside the graph).
-        outs = self._sess.run(None, feeds)
+        outs = run_onnx(self._sess, feeds)
         if "last_hidden_state" in self._output_names:
             hidden = outs[self._output_names.index("last_hidden_state")]
         else:

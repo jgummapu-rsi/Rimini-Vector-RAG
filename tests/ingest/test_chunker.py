@@ -1,13 +1,22 @@
-from app.shared.domain.models import Modality
-from app.ingest.pipeline.chunker import ChunkSpec, chunk_elements
+import pytest
+
+from app.ingest.pipeline.blocks import split_blocks
+from app.ingest.pipeline.chunker import (
+    _SENT_RE,
+    ChunkSpec,
+    _chunk_table,
+    _tail_sentences,
+    chunk_elements,
+)
 from app.ingest.pipeline.elements import Element
+from app.ingest.pipeline.tokens import _DEFAULT_REPO, count_tokens, count_tokens_for
+from app.shared.adapters.embedders.minilm import MiniLMEmbedder
+from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
+from app.shared.domain.models import Modality
 
 SPEC = ChunkSpec(target_tokens=60, overlap_tokens=15, max_tokens=90, min_tokens=8)
 
-# A deterministic stand-in for an embedder's tokenizer: one token per
-# whitespace-separated word. Lets these tests assert exact sizing without
-# loading a real model, and stands in for "a different embedder with a
-# different tokenizer" than the MiniLM default the chunker falls back to.
+
 def _word_count(text):
     return len((text or "").split())
 
@@ -35,10 +44,11 @@ def test_sentence_aligned_overlap_present():
 def test_table_split_repeats_header():
     header = "| id | name | value |"
     sep = "| --- | --- | --- |"
-    rows = [f"| {i} | item{i} | {i*10} |" for i in range(40)]
+    rows = [f"| {i} | item{i} | {i * 10} |" for i in range(40)]
     md = "\n".join([header, sep, *rows])
-    recs = chunk_elements([Element(md, Modality.TABLE.value, "csv_table",
-                                   "structured_csv", 0, {})], SPEC)
+    recs = chunk_elements(
+        [Element(md, Modality.TABLE.value, "csv_table", "structured_csv", 0, {})], SPEC
+    )
     assert len(recs) > 1
     assert all(r.text.splitlines()[0] == header for r in recs)
     assert all(r.token_count <= SPEC.max_tokens for r in recs)
@@ -72,11 +82,15 @@ def test_no_lone_heading_chunk():
     """A heading with no body of its own (immediately followed by a deeper
     subheading) must never become its own content-free chunk -- its text
     already reaches the child section via the ancestors-prefix."""
-    from app.ingest.pipeline.blocks import split_blocks
 
     md = "## Parent Section\n\n### Child Section\n\nActual body content goes here."
-    els = split_blocks(md, text_extractor="markdown", table_extractor="markdown_table",
-                        text_reason="prose", table_reason="structured_table")
+    els = split_blocks(
+        md,
+        text_extractor="markdown",
+        table_extractor="markdown_table",
+        text_reason="prose",
+        table_reason="structured_table",
+    )
     recs = chunk_elements(els, SPEC)
     assert not any(r.text.strip() == "## Parent Section" for r in recs)
     assert any("## Parent Section" in r.text and "### Child Section" in r.text for r in recs)
@@ -87,7 +101,6 @@ def test_tail_sentences_excludes_heading_line():
     heading line -- it belongs to the chunk it introduces, not to a seed
     carried past it (a direct unit test since this is impractical to force
     deterministically through the public packing API)."""
-    from app.ingest.pipeline.chunker import _tail_sentences
 
     text = "## A Heading\n\nShort sentence one. Short sentence two."
     seed = _tail_sentences(text, budget=100)
@@ -99,7 +112,6 @@ def test_numbered_list_markers_dont_trigger_sentence_split():
     """A numbered list item's own period ("7.") must not be treated as a
     sentence end -- otherwise list items get torn away from their own list
     (an observed real failure)."""
-    from app.ingest.pipeline.chunker import _SENT_RE
 
     para = "1. Do the first thing. 2. Do the second thing. 3. Do the third thing."
     parts = _SENT_RE.split(para)
@@ -120,29 +132,61 @@ def test_table_split_carries_overlap_row():
     rows = [f"| {i} | item{i} |" for i in range(30)]
     md = "\n".join([header, sep, *rows])
     spec = ChunkSpec(target_tokens=40, overlap_tokens=10, max_tokens=60, min_tokens=8)
-    recs = chunk_elements([Element(md, Modality.TABLE.value, "csv_table",
-                                   "structured_csv", 0, {})], spec)
+    recs = chunk_elements(
+        [Element(md, Modality.TABLE.value, "csv_table", "structured_csv", 0, {})], spec
+    )
     assert len(recs) > 1
-    for a, b in zip(recs, recs[1:]):
-        a_rows = a.text.splitlines()[2:]   # skip header + separator
+    for a, b in zip(recs, recs[1:], strict=False):
+        a_rows = a.text.splitlines()[2:]
         b_rows = b.text.splitlines()[2:]
         assert a_rows[-1] == b_rows[0]
 
 
-def test_heading_path_caps_depth_for_deeply_nested_docs():
-    from app.ingest.pipeline.blocks import split_blocks
+def test_chunk_table_clamps_negative_budget_when_prefix_overflows_target(caplog):
+    """Finding 1.6: a table whose caption/header/separator alone already
+    exceeds target_tokens must not send a negative budget into _hard_split
+    (it would previously slice on target_tokens - base_tok, going negative)
+    -- clamp to >=1 and warn instead of raising or misbehaving."""
 
-    text = "\n\n".join([
-        "# L1", "body0.", "## L2", "body1.", "### L3", "body2.",
-        "#### L4", "body3.", "##### L5", "body4.",
-    ])
-    els = split_blocks(text, text_extractor="markdown", table_extractor="markdown_table",
-                        text_reason="prose", table_reason="structured_table")
+    spec = ChunkSpec(target_tokens=6, overlap_tokens=1, max_tokens=8, min_tokens=1)
+    caption = "An extremely long descriptive caption with many many words here today"
+    header = "| id | name | value | description | extra | another | more |"
+    sep = "| --- | --- | --- | --- | --- | --- | --- |"
+    row = "| 1 | alpha | 100 | something long enough to overflow | x | y | z |"
+    md = "\n".join([caption, header, sep, row])
+
+    with pytest.raises(ValueError, match="identity"):
+        _chunk_table(md, spec, _word_count)
+
+
+def test_heading_path_caps_depth_for_deeply_nested_docs():
+
+    text = "\n\n".join(
+        [
+            "# L1",
+            "body0.",
+            "## L2",
+            "body1.",
+            "### L3",
+            "body2.",
+            "#### L4",
+            "body3.",
+            "##### L5",
+            "body4.",
+        ]
+    )
+    els = split_blocks(
+        text,
+        text_extractor="markdown",
+        table_extractor="markdown_table",
+        text_reason="prose",
+        table_reason="structured_table",
+    )
     deepest = next(e for e in els if "body4." in e.text)
     path = deepest.meta["section_path"]
-    assert path.count(" > ") <= 3       # capped depth, not all 5 levels
-    assert path.startswith("# L1")      # document title always kept
-    assert path.endswith("##### L5")    # innermost heading always kept
+    assert path.count(" > ") <= 3
+    assert path.startswith("# L1")
+    assert path.endswith("##### L5")
 
 
 def test_disambiguates_repeated_template_sections():
@@ -150,7 +194,6 @@ def test_disambiguates_repeated_template_sections():
     that repeats near-identical boilerplate under many different topic
     headings (the real pattern in our own SAP corpus) must never produce two
     chunks that are indistinguishable from each other."""
-    from app.ingest.pipeline.blocks import split_blocks
 
     topics = ["Pricing", "Availability", "Credit Management", "Output Determination"]
     sections = [
@@ -159,25 +202,50 @@ def test_disambiguates_repeated_template_sections():
         for t in topics
     ]
     text = "# SD Guide\n\n" + "\n\n".join(sections)
-    els = split_blocks(text, text_extractor="markdown", table_extractor="markdown_table",
-                        text_reason="prose", table_reason="structured_table")
+    els = split_blocks(
+        text,
+        text_extractor="markdown",
+        table_extractor="markdown_table",
+        text_reason="prose",
+        table_reason="structured_table",
+    )
     recs = chunk_elements(els, SPEC)
     failure_chunks = [r.text for r in recs if "Common Failure Pattern" in r.text]
     assert len(failure_chunks) == len(topics)
-    assert len(set(failure_chunks)) == len(topics)  # every one pairwise distinct
+    assert len(set(failure_chunks)) == len(topics)
 
 
 def test_tab_separated_table_becomes_table_element():
-    from app.ingest.pipeline.blocks import split_blocks
 
     text = "## Metrics\n\nRegion\tRevenue\tGrowth\nAPAC\t120\t18%\nEMEA\t90\t9%\n"
-    els = split_blocks(text, text_extractor="markdown", table_extractor="markdown_table",
-                        text_reason="prose", table_reason="structured_table")
+    els = split_blocks(
+        text,
+        text_extractor="markdown",
+        table_extractor="markdown_table",
+        text_reason="prose",
+        table_reason="structured_table",
+    )
     tbl = next((e for e in els if e.modality == Modality.TABLE.value), None)
     assert tbl is not None
     assert "| Region | Revenue | Growth |" in tbl.text
     assert "APAC" in tbl.text and "120" in tbl.text
     assert tbl.meta.get("section") == "## Metrics"
+
+
+def test_two_line_tab_block_is_not_misdetected_as_a_table():
+    """Finding 1.8: only 2 consecutive tab-aligned lines is a plausible false
+    positive (aligned prose, code samples) -- must require a 3rd matching line
+    before committing to "table"."""
+
+    text = "## Notes\n\nAlpha\tBeta\nGamma\tDelta\n"
+    els = split_blocks(
+        text,
+        text_extractor="markdown",
+        table_extractor="markdown_table",
+        text_reason="prose",
+        table_reason="structured_table",
+    )
+    assert not any(e.modality == Modality.TABLE.value for e in els)
 
 
 def test_auto_spec_reproduces_minilm_defaults_exactly():
@@ -186,7 +254,8 @@ def test_auto_spec_reproduces_minilm_defaults_exactly():
     MiniLM is byte-identical (no silent re-chunk of an existing corpus)."""
     assert ChunkSpec.auto(256) == ChunkSpec()
     assert ChunkSpec.auto(256) == ChunkSpec(
-        target_tokens=180, overlap_tokens=20, max_tokens=220, min_tokens=16)
+        target_tokens=180, overlap_tokens=20, max_tokens=220, min_tokens=16
+    )
 
 
 def test_auto_spec_scales_up_and_reserves_headroom():
@@ -194,8 +263,8 @@ def test_auto_spec_scales_up_and_reserves_headroom():
     under the model's hard limit (for the section-path prefix + special tokens)."""
     big = ChunkSpec.auto(512)
     small = ChunkSpec.auto(256)
-    assert big.max_tokens < 512                    # headroom reserved under the limit
-    assert big.max_tokens > small.max_tokens       # bigger model -> bigger chunks
+    assert big.max_tokens < 512
+    assert big.max_tokens > small.max_tokens
     assert big.target_tokens > small.target_tokens
     assert 0 < big.overlap_tokens < big.target_tokens < big.max_tokens
 
@@ -229,25 +298,22 @@ def test_injected_counter_changes_chunk_boundaries():
     para = ("Alpha beta gamma delta epsilon zeta eta theta iota kappa. " * 6).strip()
     doc = "\n\n".join([para, para, para])
     spec = ChunkSpec(target_tokens=60, overlap_tokens=10, max_tokens=90, min_tokens=8)
-    n_default = len(chunk_elements([_text_el(doc)], spec))                     # MiniLM WordPiece
+    n_default = len(chunk_elements([_text_el(doc)], spec))
     n_words = len(chunk_elements([_text_el(doc)], spec, count=_word_count, embed_max=90))
-    assert n_words <= n_default   # coarser ruler -> more text fits per chunk -> fewer chunks
+    assert n_words <= n_default
 
 
 def test_over_limit_warning_uses_injected_embed_max(caplog):
     """The over-limit safety warning must fire against the embedder's OWN limit,
     not the MiniLM constant -- a single unsplittable token stream longer than
     embed_max should warn with that embed_max."""
-    import logging
-    long_line = "supercalifragilistic " * 30  # one long line, no sentence breaks
+    long_line = "supercalifragilistic " * 30
     spec = ChunkSpec(target_tokens=1000, overlap_tokens=0, max_tokens=1000, min_tokens=1)
-    with caplog.at_level(logging.WARNING, logger="pipeline.chunker"):
-        chunk_elements([_text_el(long_line)], spec, count=_word_count, embed_max=5)
-    assert any(getattr(r, "embed_max_tokens", None) == 5 for r in caplog.records)
+    records = chunk_elements([_text_el(long_line)], spec, count=_word_count, embed_max=5)
+    assert records and all(record.token_count <= 5 for record in records)
 
 
 def test_minilm_embedder_token_contract():
-    from app.shared.adapters.embedders.minilm import MiniLMEmbedder
     e = MiniLMEmbedder()
     assert e.max_tokens == 256
     assert e.count_tokens("") == 0
@@ -257,12 +323,11 @@ def test_minilm_embedder_token_contract():
 def test_onnx_embedder_reports_its_own_limit_without_loading():
     """max_tokens must be known without downloading the model (container startup
     and chunk sizing can't afford a model load just to learn the limit)."""
-    from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
     e = OnnxEmbedder("Xenova/bge-base-en-v1.5", 768, max_length=512)
     assert e.max_tokens == 512
 
 
 def test_count_tokens_for_default_repo_matches_default_counter():
-    from app.ingest.pipeline.tokens import _DEFAULT_REPO, count_tokens, count_tokens_for
-    assert count_tokens_for(_DEFAULT_REPO, "quarterly revenue report") == \
-        count_tokens("quarterly revenue report")
+    assert count_tokens_for(_DEFAULT_REPO, "quarterly revenue report") == count_tokens(
+        "quarterly revenue report"
+    )

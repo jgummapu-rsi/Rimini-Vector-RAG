@@ -1,14 +1,14 @@
 """VectorStore port: the `knowledgebase` collection of embeddings.
 
-Local adapter = local file: one JSON record per document (sqlite `vector_documents`)
-with chunks embedded in a chunks[] array. Production adapter = Qdrant/Mongo.
 Vectors are FLOAT for now; binarization is deferred behind this same interface.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 
 @dataclass
@@ -19,6 +19,7 @@ class VectorPoint:
     `payload` carries the document _id, user_id, modality, and other fields
     used for ACL filtering and rendering search hits.
     """
+
     chunk_id: str
     tenant_id: str
     vector: list[float]
@@ -28,12 +29,27 @@ class VectorPoint:
 @dataclass
 class SearchHit:
     """One ranked search result: a chunk id, its score, and its payload."""
+
     chunk_id: str
     score: float
     payload: dict[str, Any]
 
 
 class VectorStore(ABC):
+    def collection_candidates(self, tenant_id: str, question: str, access=None) -> list[SearchHit]:
+        """Schema-matching roster evidence for enumeration queries."""
+        return []
+
+    def surrounding_chunks(
+        self, tenant_id: str, chunk_ids: list[str], access=None, radius: int = 2, limit: int = 50
+    ) -> list[SearchHit]:
+        """Authorized source-order neighbors, retaining independent citation IDs."""
+        return []
+
+    @abstractmethod
+    def validate_sources(self, tenant_id: str, chunk_ids: list[str], access=None) -> bool:
+        raise NotImplementedError
+
     """Port for the `knowledgebase` collection of chunk embeddings."""
 
     @abstractmethod
@@ -58,7 +74,7 @@ class VectorStore(ABC):
         tenant_id: str,
         query: list[float],
         top_k: int = 5,
-        access: Optional[Callable[[dict], bool]] = None,
+        access: Callable[[dict], bool] | None = None,
         query_text: str = "",
     ) -> list[SearchHit]:
         """Tenant-scoped nearest-neighbour search (cosine), optionally fused with

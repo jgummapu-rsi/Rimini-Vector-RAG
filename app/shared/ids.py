@@ -5,6 +5,7 @@ A 12-byte ObjectId = 4-byte epoch seconds + 5-byte per-process random +
 with MongoDB ObjectIds, so tenant_id / user_id / document_id values will remain
 valid if we later move metadata into Mongo/pymongo.
 """
+
 from __future__ import annotations
 
 import os
@@ -15,10 +16,6 @@ import time
 
 _lock = threading.Lock()
 
-# Exactly 24 lowercase-or-uppercase hex digits, anchored. Deliberately a regex
-# rather than int(value, 16): int() also accepts a leading sign, underscore
-# digit separators and surrounding whitespace, so "+" + 23 hex chars and
-# "ffff_ffff..." both passed the old check while being invalid ObjectIds.
 _OBJECT_ID_RE = re.compile(r"\A[0-9a-fA-F]{24}\Z")
 _machine = os.urandom(5)
 _counter = int.from_bytes(os.urandom(3), "big")
@@ -31,11 +28,7 @@ def new_object_id() -> str:
     with _lock:
         _counter = (_counter + 1) % 0x1000000
         counter = _counter
-    return (
-        struct.pack(">I", ts).hex()
-        + _machine.hex()
-        + struct.pack(">I", counter)[1:].hex()  # low 3 bytes
-    )
+    return struct.pack(">I", ts).hex() + _machine.hex() + struct.pack(">I", counter)[1:].hex()
 
 
 def is_object_id(value: str) -> bool:

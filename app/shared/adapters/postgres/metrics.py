@@ -4,6 +4,7 @@ Stored in the shared DB so the API and worker processes both contribute and a
 single `/metrics` read returns the whole picture. Each metric row is a name with
 a count and total milliseconds (for timings); avg is derived on read.
 """
+
 from __future__ import annotations
 
 from app.shared.adapters.postgres.db import transaction

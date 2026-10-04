@@ -1,10 +1,3 @@
--- Production metadata store (Postgres). Postgres translation of
--- app/adapters/sqlite/schema.sql: ObjectIds still stored as 24-char hex TEXT
--- (app-generated, no gen_random_uuid() needed); JSON columns are native JSONB
--- here (vs TEXT in the SQLite mirror, which has no JSON type).
---
--- Does NOT include vector_documents -- that table is SQLite/local-only; its
--- Postgres replacement is `vector_chunks` in app/adapters/pgvector/schema.sql.
 
 CREATE TABLE IF NOT EXISTS tenants (
     id          TEXT PRIMARY KEY,
@@ -17,24 +10,15 @@ CREATE TABLE IF NOT EXISTS users (
     id          TEXT PRIMARY KEY,
     tenant_id   TEXT NOT NULL REFERENCES tenants(id),
     email       TEXT NOT NULL,
-    role        TEXT NOT NULL DEFAULT 'member',   -- admin | member | viewer
-    api_token   TEXT NOT NULL UNIQUE,             -- sha256 hash of the bearer token
-    password_hash TEXT,                            -- PBKDF2 hash (set by /onboarding/register);
-                                                    -- NULL for seed-script users that never log
-                                                    -- in with a password
+    role        TEXT NOT NULL DEFAULT 'member',
+    api_token   TEXT NOT NULL UNIQUE,
+    password_hash TEXT,
+
     status      TEXT NOT NULL DEFAULT 'active',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, email)
 );
 
--- app.api.onboarding_routes.get_user_by_email looks up by email ACROSS every
--- tenant (onboarding login has no tenant_id up front) and treats "the row with
--- a password_hash" as the one true password-based account for that email. The
--- UNIQUE(tenant_id, email) above does not stop that invariant from being
--- violated -- two concurrent /onboarding/register calls with the same email
--- land in two DIFFERENT freshly-created tenants, so that constraint never
--- fires. This partial index is the actual guard: at most one password-holding
--- row per email, globally.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_password_unique
     ON users(email) WHERE password_hash IS NOT NULL;
 
@@ -42,41 +26,65 @@ CREATE TABLE IF NOT EXISTS documents (
     id                 TEXT PRIMARY KEY,
     tenant_id          TEXT NOT NULL REFERENCES tenants(id),
     owner_user_id      TEXT NOT NULL REFERENCES users(id),
-    source_type        TEXT NOT NULL,                -- pdf | docx | image | table | xlsx
+    source_type        TEXT NOT NULL,
     blob_path          TEXT NOT NULL,
     content_sha256     TEXT NOT NULL,
     mime               TEXT,
     filename           TEXT,
-    visibility         TEXT NOT NULL DEFAULT 'private',  -- tenant | private | shared
+    visibility         TEXT NOT NULL DEFAULT 'private',
     acl_user_ids       JSONB NOT NULL DEFAULT '[]',
-    scope              TEXT NOT NULL DEFAULT 'tenant',  -- tenant | global (cross-tenant reach)
-    extracted_metadata JSONB NOT NULL DEFAULT '{}',  -- {author, date, topics[], entities[]}
-    promoted_at       TIMESTAMPTZ,
-    promoted_by_user_id TEXT,
-    promotion_message TEXT,
-    promotion_version INTEGER NOT NULL DEFAULT 0,
-    promotion_config JSONB NOT NULL DEFAULT '{}',
+    scope              TEXT NOT NULL DEFAULT 'tenant',
+    extracted_metadata JSONB NOT NULL DEFAULT '{}',
+
+    version            INTEGER NOT NULL DEFAULT 1,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, content_sha256)            -- dedup key
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    UNIQUE (tenant_id, owner_user_id, content_sha256)
 );
+
+CREATE INDEX IF NOT EXISTS idx_documents_owner_filename
+    ON documents(tenant_id, owner_user_id, filename);
+
+CREATE TABLE IF NOT EXISTS document_versions (
+    id               TEXT PRIMARY KEY,
+    document_id      TEXT NOT NULL REFERENCES documents(id),
+    tenant_id        TEXT NOT NULL REFERENCES tenants(id),
+    version          INTEGER NOT NULL,
+    content_sha256   TEXT NOT NULL,
+    blob_path        TEXT NOT NULL,
+    filename         TEXT,
+    mime             TEXT,
+    byte_size        BIGINT NOT NULL DEFAULT 0,
+    uploaded_by      TEXT NOT NULL,
+    job_id           TEXT,
+
+    chunks_added     INTEGER,
+    chunks_removed   INTEGER,
+    chunks_unchanged INTEGER,
+    delta            JSONB NOT NULL DEFAULT '{}',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (document_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_docver_doc ON document_versions(tenant_id, document_id);
+CREATE INDEX IF NOT EXISTS idx_docver_job ON document_versions(job_id);
 
 CREATE TABLE IF NOT EXISTS ingestion_jobs (
     id              TEXT PRIMARY KEY,
     document_id     TEXT NOT NULL REFERENCES documents(id),
     tenant_id       TEXT NOT NULL REFERENCES tenants(id),
     stage           TEXT NOT NULL DEFAULT 'parse',
-    status          TEXT NOT NULL DEFAULT 'queued', -- queued|running|done|failed|dead
+    status          TEXT NOT NULL DEFAULT 'queued',
     attempts        INTEGER NOT NULL DEFAULT 0,
     error           TEXT,
     route_summary   JSONB,
-    -- Earliest time this job may be claimed. Retry backoff lives here rather
-    -- than in the worker's own sleep: a sleeping worker doesn't stop a SECOND
-    -- worker from claiming the same failing job immediately, so the delay has
-    -- to be a property of the row. Defaults to now() = claimable at once.
+
+    blob_path       TEXT,
+    content_sha256  TEXT,
+    version         INTEGER,
+
     available_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Set to now()+JOB_LEASE_SECONDS when claimed, NULL otherwise. If a worker
-    -- crashes mid-job the row stays `running` forever with no lease check --
-    -- this is what lets the reaper reclaim it once the lease expires.
+
     lease_expires_at TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -86,38 +94,35 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claim
 CREATE INDEX IF NOT EXISTS idx_jobs_lease
     ON ingestion_jobs(status, lease_expires_at);
 
--- Per-stage trace: one row per pipeline stage per attempt. The runner logs the
--- same information, but logs aren't queryable -- this is what lets the trace UI
--- replay a document's journey after the job is long finished.
 CREATE TABLE IF NOT EXISTS job_events (
     id              TEXT PRIMARY KEY,
     job_id          TEXT NOT NULL,
     document_id     TEXT NOT NULL,
     tenant_id       TEXT NOT NULL,
-    stage           TEXT NOT NULL,                 -- parse | route | ... | upsert
-    seq             INTEGER NOT NULL DEFAULT 0,    -- stage position; ids/timestamps are
-                                                   -- too coarse to order ms-apart stages
-    status          TEXT NOT NULL,                 -- ok | error
+    stage           TEXT NOT NULL,
+    seq             INTEGER NOT NULL DEFAULT 0,
+
+    status          TEXT NOT NULL,
     duration_ms     DOUBLE PRECISION NOT NULL DEFAULT 0,
     attempt         INTEGER NOT NULL DEFAULT 0,
-    detail          JSONB,                         -- counts, routing breakdown
+    detail          JSONB,
     at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, attempt, seq);
 CREATE INDEX IF NOT EXISTS idx_job_events_doc ON job_events(tenant_id, document_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
-    id              TEXT PRIMARY KEY,              -- = document_id + zero-padded ordinal
+    id              TEXT PRIMARY KEY,
     document_id     TEXT NOT NULL REFERENCES documents(id),
     tenant_id       TEXT NOT NULL REFERENCES tenants(id),
     ordinal         INTEGER NOT NULL,
-    modality        TEXT NOT NULL,                 -- text | image | table
+    modality        TEXT NOT NULL,
     extractor       TEXT,
     route_reason    TEXT,
     token_count     INTEGER,
     content_sha256  TEXT,
-    text            TEXT,                          -- chunk content (also used by embed stage)
-    meta            JSONB,                         -- page range, sheet, etc.
+    text            TEXT,
+    meta            JSONB,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(tenant_id, document_id);
@@ -125,8 +130,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(tenant_id, document_id);
 CREATE TABLE IF NOT EXISTS connectors (
     id          TEXT PRIMARY KEY,
     tenant_id   TEXT NOT NULL REFERENCES tenants(id),
-    kind        TEXT NOT NULL,                     -- email | teams | slack (Phase 2)
-    config      JSONB NOT NULL DEFAULT '{}',       -- secret refs
+    kind        TEXT NOT NULL,
+    config      JSONB NOT NULL DEFAULT '{}',
     cursor      TEXT,
     enabled     BOOLEAN NOT NULL DEFAULT false,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -142,21 +147,88 @@ CREATE TABLE IF NOT EXISTS audit_log (
     at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Observability: counters + accumulated timings (shared by API + worker).
 CREATE TABLE IF NOT EXISTS metrics (
     name      TEXT PRIMARY KEY,
     count     BIGINT NOT NULL DEFAULT 0,
     total_ms  DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
--- Live-editable deployment-wide config, currently just the LiteLLM gateway
--- override (base_url/api_key). Read by app.gateway.client.LiteLLMClient's
--- config_provider closure (wired in app.container.build_container()) on every
--- gateway call, so POST /onboarding/gateway-config takes effect immediately,
--- no restart. Key/value rather than fixed columns so future overrides don't
--- need another migration.
 CREATE TABLE IF NOT EXISTS system_config (
     key         TEXT PRIMARY KEY,
     value       TEXT,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS extraction_artifacts (
+    job_id TEXT NOT NULL REFERENCES ingestion_jobs(id) ON DELETE CASCADE,
+    content_sha256 TEXT NOT NULL,
+    artifact_key TEXT NOT NULL,
+    artifact JSONB NOT NULL,
+    PRIMARY KEY (job_id, content_sha256, artifact_key)
+);
+
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS filename TEXT;
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS source_type TEXT;
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS lease_token TEXT;
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS generation_id TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS active_generation_id TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS indexed_version INTEGER;
+
+CREATE TABLE IF NOT EXISTS ingestion_generations (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    tenant_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    blob_path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    parent_generation_id TEXT,
+    chunks JSONB NOT NULL,
+    extracted_metadata JSONB NOT NULL,
+    published_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_generations_document ON ingestion_generations(document_id);
+
+CREATE OR REPLACE FUNCTION reject_generation_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'Published generations are immutable';
+END;
+$$;
+DROP TRIGGER IF EXISTS generation_immutable ON ingestion_generations;
+CREATE TRIGGER generation_immutable BEFORE UPDATE ON ingestion_generations
+FOR EACH ROW EXECUTE FUNCTION reject_generation_update();
+
+CREATE TABLE IF NOT EXISTS corpus_epochs (
+    scope_key TEXT PRIMARY KEY,
+    revision BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS deleted_documents (
+    document_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE ingestion_generations ADD COLUMN IF NOT EXISTS embedding_profile_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_document_job
+    ON ingestion_jobs(document_id) WHERE status IN ('queued','running');
+
+ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_tenant_id_content_sha256_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_owner_hash
+    ON documents(tenant_id, owner_user_id, content_sha256);
+
+CREATE OR REPLACE FUNCTION document_authorization_epoch() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF (OLD.visibility,OLD.scope,OLD.acl_user_ids,OLD.owner_user_id)
+       IS DISTINCT FROM (NEW.visibility,NEW.scope,NEW.acl_user_ids,NEW.owner_user_id) THEN
+        INSERT INTO corpus_epochs(scope_key,revision)
+        VALUES (CASE WHEN OLD.scope='global' OR NEW.scope='global' THEN 'global' ELSE NEW.tenant_id END,1)
+        ON CONFLICT(scope_key) DO UPDATE SET revision=corpus_epochs.revision+1;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS document_authorization_epoch ON documents;
+CREATE TRIGGER document_authorization_epoch AFTER UPDATE OF visibility,scope,acl_user_ids,owner_user_id
+    ON documents FOR EACH ROW EXECUTE FUNCTION document_authorization_epoch();

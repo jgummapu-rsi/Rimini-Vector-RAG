@@ -1,14 +1,17 @@
-# data & secrets
-# `.env*` catches every local variant (.env, .env.bak, .env.local, .env.prod...)
-# so a stray copy of a file holding LITELLM_API_KEY can never be committed.
-# .env.example is the one tracked template and is re-allowed below.
+# Runtime data and secrets
 data/
 .env*
 !.env.example
 .webui_secret_key
-.claude/settings.local.json
+.claude/
+secrets/
+backups/
+models/
+.hf-cache/
+*.pem
+*.key
 
-# python
+# Python environments and caches
 __pycache__/
 *.py[cod]
 .venv/
@@ -18,7 +21,29 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
 
-# local artifacts that are regenerated, not source
+# Generated research artifacts
+graphify-out/
 eval/logs/
-notebooks/.ipynb_checkpoints/
+eval/*.log
+eval/*.xlsx
+eval/*_results.csv
+eval/*_summary.csv
+eval/retrieval_*.json
+notebooks/**/.ipynb_checkpoints/
+
+# Local notes and workstation files
+rag_system.md
+RAG_System.md
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

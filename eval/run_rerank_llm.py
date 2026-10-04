@@ -13,23 +13,23 @@ fixed. Comparable directly against `eval/retrieval_sota_results.xlsx`
 
 Run:  python -m eval.run_rerank_llm
 """
+
 from __future__ import annotations
 
 import math
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+import ir_datasets
 import numpy as np
 import pandas as pd
 
-import ir_datasets
-from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
-from app.shared.adapters.pgvector.db import transaction
 from app.retrieval.adapters.rerankers.llm_reranker import LLMReranker
-from app.shared.config import settings
-from app.shared.container import build_container
 from app.retrieval.rag.query import _rerank
+from app.shared.adapters.embedders.onnx_embedder import OnnxEmbedder
+from app.shared.container import build_container
+from eval.storage import isolated_evaluation, populate_scifact
 
 K_VALUES = [1, 3, 5, 10]
 POOL_TO_RERANKER = 20
@@ -40,11 +40,15 @@ EMBED_REPO = "Xenova/bge-base-en-v1.5"
 EMBED_DIM = 768
 EMBED_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 
-# bge-base embed + bge-reranker-base cross-encoder, current live baseline
-# (eval/retrieval_sota_results.xlsx, run 2026-08-12T09:39:42Z)
 BASELINE = {
-    "recall@1": 0.548444, "recall@3": 0.725222, "recall@5": 0.777, "recall@10": 0.882333,
-    "ndcg@1": 0.573333, "ndcg@3": 0.661558, "ndcg@5": 0.684128, "ndcg@10": 0.720797,
+    "recall@1": 0.548444,
+    "recall@3": 0.725222,
+    "recall@5": 0.777,
+    "recall@10": 0.882333,
+    "ndcg@1": 0.573333,
+    "ndcg@3": 0.661558,
+    "ndcg@5": 0.684128,
+    "ndcg@10": 0.720797,
     "mrr@10": 0.67572,
 }
 
@@ -70,28 +74,30 @@ def _dedupe(doc_ids):
     seen, out = set(), []
     for d in doc_ids:
         if d not in seen:
-            seen.add(d); out.append(d)
+            seen.add(d)
+            out.append(d)
     return out
 
 
-def main() -> None:
-    embedder = OnnxEmbedder(EMBED_REPO, EMBED_DIM, pooling="cls",
-                            query_instruction=EMBED_QUERY_INSTRUCTION, max_length=512)
-    container = build_container(embedder=embedder)     # dim 768 matches existing table (no rebuild)
+@isolated_evaluation
+def main(settings) -> None:
+    embedder = OnnxEmbedder(
+        EMBED_REPO,
+        EMBED_DIM,
+        pooling="cls",
+        query_instruction=EMBED_QUERY_INSTRUCTION,
+        max_length=512,
+    )
+    container = build_container(settings, embedder=embedder)
     container.reranker = LLMReranker(container.gateway, container.settings.chat_model)
 
-    with transaction(settings.postgres_dsn) as cur:
-        cur.execute("SELECT id FROM tenants WHERE name = %s", (EVAL_TENANT_NAME,))
-        row = cur.fetchone()
-    if not row:
-        raise RuntimeError(
-            f"eval tenant '{EVAL_TENANT_NAME}' not found -- run "
-            "eval/run_retrieval_sota.py first to ingest+embed the corpus."
-        )
-    tid = row["id"]
+    ds = ir_datasets.load("beir/scifact/test")
+    tid = populate_scifact(container, ds, EVAL_TENANT_NAME)
     n_vec = container.vectors.count(tid)
-    print(f"tenant {tid} | {n_vec} vectors (bge-base 768) | "
-          f"reranker=llm ({container.settings.chat_model}, listwise)\n")
+    print(
+        f"tenant {tid} | {n_vec} vectors (bge-base 768) | "
+        f"reranker=llm ({container.settings.chat_model}, listwise)\n"
+    )
 
     ds = ir_datasets.load("beir/scifact/test")
     qrels = defaultdict(dict)
@@ -108,40 +114,54 @@ def main() -> None:
         qtext = queries[qid]
         rel = {d for d, r in qrels[qid].items() if r > 0}
         qvec = embedder.embed([qtext], is_query=True)[0]
-        hits = container.vectors.search(tid, list(qvec), top_k=POOL_TO_RERANKER,
-                                        access=None, query_text=qtext)
+        hits = container.vectors.search(
+            tid, list(qvec), top_k=POOL_TO_RERANKER, access=None, query_text=qtext
+        )
         hits, _ = _rerank(container, qtext, hits, POOL_TO_RERANKER)
         ranked = _dedupe(h.payload["_id"] for h in hits)
         row = {"query_id": qid}
         for k in K_VALUES:
-            r = _recall_at_k(ranked, rel, k); nd = _ndcg_at_k(ranked, rel, k)
-            agg[f"recall@{k}"].append(r); agg[f"ndcg@{k}"].append(nd)
-            row[f"recall@{k}"] = r; row[f"ndcg@{k}"] = nd
-        rr = _rr_at_10(ranked, rel); agg["mrr@10"].append(rr); row["rr@10"] = rr
+            r = _recall_at_k(ranked, rel, k)
+            nd = _ndcg_at_k(ranked, rel, k)
+            agg[f"recall@{k}"].append(r)
+            agg[f"ndcg@{k}"].append(nd)
+            row[f"recall@{k}"] = r
+            row[f"ndcg@{k}"] = nd
+        rr = _rr_at_10(ranked, rel)
+        agg["mrr@10"].append(rr)
+        row["rr@10"] = rr
         rows.append(row)
         if n % 20 == 0:
-            print(f"  {n}/{len(query_ids)}  ({time.time()-t0:.0f}s elapsed)", end="\r")
-    print(f"\n  queried in {time.time()-t0:.0f}s\n")
+            print(f"  {n}/{len(query_ids)}  ({time.time() - t0:.0f}s elapsed)", end="\r")
+    print(f"\n  queried in {time.time() - t0:.0f}s\n")
 
     def mean(k):
         return float(np.mean(agg[k]))
 
-    print("=== bge-base embed + llm (listwise) rerank  vs  bge-base + bge-reranker-base baseline ===")
+    print(
+        "=== bge-base embed + llm (listwise) rerank  vs  bge-base + bge-reranker-base baseline ==="
+    )
     print(f"{'metric':12} {'baseline':>9} {'this':>9} {'delta':>9}")
     order = [f"recall@{k}" for k in K_VALUES] + [f"ndcg@{k}" for k in K_VALUES] + ["mrr@10"]
     summary = {"metric": [], "value": []}
     for m in order:
-        v = mean(m); b = BASELINE[m]
-        print(f"{m:12} {b:>9.4f} {v:>9.4f} {v-b:>+9.4f}")
-        summary["metric"].append(m); summary["value"].append(v)
+        v = mean(m)
+        b = BASELINE[m]
+        print(f"{m:12} {b:>9.4f} {v:>9.4f} {v - b:>+9.4f}")
+        summary["metric"].append(m)
+        summary["value"].append(v)
 
     for k2, v2 in [
-        ("embedder", EMBED_REPO), ("embed_dim", EMBED_DIM),
+        ("embedder", EMBED_REPO),
+        ("embed_dim", EMBED_DIM),
         ("reranker", f"llm:{container.settings.chat_model}"),
-        ("pool_to_reranker", POOL_TO_RERANKER), ("num_queries", len(query_ids)),
-        ("tenant_id", tid), ("run_at_utc", datetime.now(timezone.utc).isoformat()),
+        ("pool_to_reranker", POOL_TO_RERANKER),
+        ("num_queries", len(query_ids)),
+        ("tenant_id", tid),
+        ("run_at_utc", datetime.now(UTC).isoformat()),
     ]:
-        summary["metric"].append(k2); summary["value"].append(v2)
+        summary["metric"].append(k2)
+        summary["value"].append(v2)
 
     with pd.ExcelWriter(OUT_XLSX, engine="openpyxl") as w:
         pd.DataFrame(summary).to_excel(w, sheet_name="summary", index=False)

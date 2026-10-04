@@ -21,56 +21,52 @@ tokenizer; `count_tokens(text)` is the MiniLM default kept for the many callers
 (and tests) that predate the multi-embedder path. Embedders expose their own
 counting via app.shared.ports.embedder.Embedder.count_tokens, which routes here.
 """
+
 from __future__ import annotations
 
-# Default embedding model's real hard limit -- the MiniLM baseline. Concrete
-# embedders report their own via Embedder.max_tokens; this remains the fallback
-# for the default (MiniLM) counting path and for offline size heuristics.
+import logging
+import time
+
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer
+
+log = logging.getLogger(__name__)
+
 EMBED_MAX_TOKENS = 256
 
 _DEFAULT_REPO = "Xenova/all-MiniLM-L6-v2"
 
-# Per-repo cache of counting tokenizers (truncation + padding DISABLED, so we
-# measure true length). A `False` value means that repo's tokenizer is
-# permanently unavailable this process (offline / uncached first run) and we
-# fall back to the char heuristic without retrying the download every call.
+_RETRY_COOLDOWN_SECONDS = 60.0
+
 _COUNTER_CACHE: dict[str, object] = {}
 
 
-def _counting_tokenizer(repo: str):
-    """Load (once, process-cached) a no-truncation/no-padding tokenizer for
-    `repo`. Returns the tokenizer, or False if it can't be loaded."""
-    cached = _COUNTER_CACHE.get(repo)
+def _counting_tokenizer(repo: str, revision: str | None = None):
+    key = (repo, revision) if revision else repo
+    cached = _COUNTER_CACHE.get(key)
     if cached is not None:
-        return cached
-    try:
-        from huggingface_hub import hf_hub_download
-        from tokenizers import Tokenizer
+        if not isinstance(cached, float):
+            return cached
+        if time.monotonic() < cached:
+            raise RuntimeError(f"Required tokenizer {repo} is unavailable; retry after cooldown")
 
-        tok = Tokenizer.from_file(hf_hub_download(repo, "tokenizer.json"))
-        # A model's tokenizer.json often bakes in truncation/padding defaults
-        # (e.g. MiniLM's is 128, not even the embedder's real 256) -- both must
-        # be disabled to measure true length; leaving padding on silently
-        # inflates the count for any text shorter than the pad length.
+    try:
+        tok = Tokenizer.from_file(hf_hub_download(repo, "tokenizer.json", revision=revision))
+
         tok.no_truncation()
         tok.no_padding()
-        _COUNTER_CACHE[repo] = tok
+        _COUNTER_CACHE[key] = tok
         return tok
-    except Exception:  # pragma: no cover - offline / first-run-without-cache fallback
-        _COUNTER_CACHE[repo] = False
-        return False
+    except Exception as exc:
+        _COUNTER_CACHE[key] = time.monotonic() + _RETRY_COOLDOWN_SECONDS
+        raise RuntimeError(f"Required tokenizer {repo} could not be loaded") from exc
 
 
-def count_tokens_for(repo: str, text: str) -> int:
-    """True (untruncated) token length of `text` in `repo`'s tokenizer. Falls
-    back to a ~4-chars-per-token heuristic only if the tokenizer is
-    unavailable."""
+def count_tokens_for(repo: str, text: str, revision: str | None = None) -> int:
     if not text:
         return 0
-    tok = _counting_tokenizer(repo)
-    if tok:
-        return len(tok.encode(text).ids)
-    return max(1, (len(text) + 3) // 4)
+    tok = _counting_tokenizer(repo, revision)
+    return len(tok.encode(text).ids)
 
 
 def count_tokens(text: str) -> int:

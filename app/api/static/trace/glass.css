@@ -1,0 +1,182 @@
+/* Shared glass finish for both portal entry points. Sol lights the edges;
+   neutral surfaces keep text and status labels readable. */
+:root {
+  --glass-surface: rgba(255,255,255,.88);
+  --glass-glow: 0 0 0 1px rgba(251,226,50,.52), 0 0 20px rgba(251,226,50,.18),
+    inset 0 1px 0 rgba(255,255,255,.95), 0 8px 24px rgba(22,22,22,.05);
+  --glass-control: 0 0 0 1px rgba(251,226,50,.45), 0 0 12px rgba(251,226,50,.14),
+    inset 0 1px 0 rgba(255,255,255,.9);
+  --glass-active: 0 0 0 2px rgba(251,226,50,.8), 0 0 24px rgba(251,226,50,.3),
+    inset 0 1px 0 rgba(255,255,255,.95), 0 8px 24px rgba(22,22,22,.06);
+}
+body { background: linear-gradient(135deg, var(--gray-1), var(--white)); }
+header.site, .pagehead, #askLayout .chat-history, .chat-main,
+.source-head, .source-body, .inline-preview, .composer-wrap {
+  background-color: var(--glass-surface);
+  background-image: none;
+}
+header.site { box-shadow: 0 1px 0 rgba(251,226,50,.6), 0 5px 20px rgba(251,226,50,.1); }
+:is(.card, .welcome-panel, .summary-card, .titlerow, .stage, .citation,
+    .tablewrap, .inline-source, .source-chunk, .source-note, .source-text,
+    .question-bubble, .card > .note, .tokenfield, .side),
+#gate .gatecard, #askdetail .welcome-panel, #askdetail .answercard {
+  background: var(--glass-surface);
+  border: 1px solid var(--gray-2);
+  box-shadow: var(--glass-glow);
+  transition: box-shadow .2s var(--ease), border-color .2s var(--ease);
+}
+#askdetail .welcome-panel { padding: 32px; border-radius: 16px; margin-bottom: 20px; }
+#askdetail .answercard { padding: 24px; border-radius: 16px; }
+.stage.is-pend { background: rgba(247,247,247,.88); }
+.citation, .source-chunk.cited { border-left: 3px solid var(--sol); }
+.band { box-shadow: var(--glass-glow); border: 1px solid var(--gray-7); }
+.band .stat { box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
+dialog.member-dialog, dialog.source-dialog {
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 0 0 2px rgba(251,226,50,.65), 0 0 40px rgba(251,226,50,.24), var(--shadow-lg);
+}
+dialog::backdrop { backdrop-filter: blur(8px); }
+:is(.btn, .choicebtn, .navitem, .chip, .workspace-badge, .avatar, .vpill,
+    .welcome-icon, .doc, .status, .asktag, .vcur),
+input:not([type=file]), select, textarea, .tabs button, #drop {
+  box-shadow: var(--glass-control);
+  transition: background-color .2s var(--ease), box-shadow .2s var(--ease),
+    border-color .2s var(--ease), transform .2s var(--ease);
+}
+.btn:not(.btn-primary):not(.btn-danger-solid):not(:disabled),
+.choicebtn, .navitem, .chip, .workspace-badge, .avatar, .vpill, .welcome-icon,
+input:not([type=file]), select, textarea, #drop {
+  background-color: var(--glass-surface);
+}
+/* Keep the select's functional arrow and the status palette intact. */
+.btn-primary { background-color: var(--sol); box-shadow: var(--glass-control); }
+.btn-danger-solid { box-shadow: var(--glass-control); }
+.navitem { border: 1px solid var(--gray-2); }
+nav.mainnav { gap: 10px; }
+.tabs button { padding-left: 12px; padding-right: 12px; border-radius: 6px 6px 0 0; }
+.doc { border-color: var(--gray-2); background-color: rgba(255,255,255,.84); margin: 8px 4px; }
+.doc.sel, .navitem.active { background-color: var(--yellow-1); box-shadow: var(--glass-active); }
+.status, .asktag, .vcur { box-shadow: 0 0 0 1px rgba(251,226,50,.35), inset 0 1px 0 rgba(255,255,255,.65); }
+.source-banner, .errbox, .confirm { box-shadow: var(--glass-control); }
+.tablewrap table, .team-table { background: transparent; }
+.team-table th, th { background: rgba(247,247,247,.85); }
+.team-table tbody tr:nth-child(even), tbody tr:nth-child(even) { background: rgba(247,247,247,.65); }
+.team-table tbody tr { box-shadow: inset 0 1px 0 rgba(255,255,255,.9); }
+#askq { background: transparent; box-shadow: none; }
+#askform { box-shadow: var(--glass-active); }
+#askLayout .chat-history { box-shadow: 1px 0 0 rgba(251,226,50,.4); }
+@supports (backdrop-filter: blur(16px)) {
+  :is(header.site, .pagehead, .card, .welcome-panel, .summary-card, .titlerow,
+      .stage, .citation, .tablewrap, .inline-source, .side, .card > .note, .tokenfield),
+  #gate .gatecard, #askdetail .welcome-panel, #askdetail .answercard,
+  dialog.member-dialog, dialog.source-dialog {
+    backdrop-filter: blur(16px) saturate(120%);
+  }
+  :is(.btn, .choicebtn, .navitem, .chip, .workspace-badge),
+  input:not([type=file]), select, #drop { backdrop-filter: blur(8px); }
+  #askq { backdrop-filter: none; }
+}
+@media (hover: hover) {
+  :is(.card, .summary-card, .stage, .citation, .choicebtn):hover,
+  .btn:not(:disabled):hover, .navitem:hover, .doc:hover, #drop:hover {
+    box-shadow: var(--glass-active);
+  }
+}
+input:focus, select:focus, textarea:focus, .btn:focus-visible,
+.choicebtn:focus-visible, .navitem:focus-visible, .doc:focus-visible {
+  box-shadow: var(--glass-active);
+  outline: 3px solid var(--teal); outline-offset: 3px;
+}
+#askq:focus { box-shadow: none; }
+.btn:disabled { box-shadow: none; }
+@media (max-width: 600px) {
+  #askdetail .welcome-panel { padding: 24px 18px; }
+  #askdetail .answercard { padding: 20px; }
+  nav.mainnav { gap: 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root { --glass-surface: #FFFFFF; }
+  *, *::before, *::after { backdrop-filter: none !important; }
+  dialog.member-dialog, dialog.source-dialog, #askform { background-color: var(--white); }
+}
+
+/* Compact hierarchy: body copy stays readable while headings and chrome recede. */
+h1 { font-size: clamp(30px, 3vw, 40px); line-height: 1.14; }
+h2 { font-size: clamp(24px, 2.4vw, 30px); line-height: 1.2; }
+h3 { font-size: 17px; line-height: 1.3; }
+.intro h1 { font-size: clamp(34px, 3.4vw, 46px); max-width: 17ch; line-height: 1.12; }
+.intro .lede { font-size: 16px; line-height: 1.65; }
+.card h2 { font-size: 28px; }
+.pagehead { padding: 24px 32px; }
+.pagehead .lede { margin-top: 10px; max-width: 90ch; }
+header.site { padding-top: 12px; padding-bottom: 12px; min-height: 72px; }
+.product { font-size: 15px; }
+.btn { font-size: 12px; padding: 10px 14px; }
+.navitem { font-size: 13px; padding: 10px 12px; }
+.welcome-panel { padding: 32px; }
+.welcome-panel h2 { max-width: 30ch; font-size: 28px; }
+.summary-card { padding: 20px; }
+.summary-card strong { font-size: 22px; }
+.team-toolbar h2, .member-dialog h2 { font-size: 26px; }
+.titlerow h2 { font-size: 26px; }
+.stage .nm { font-size: 16px; }
+.stage { padding: 16px 18px; }
+.band .val { font-size: 30px; }
+.band .note { background: transparent; border: 0; box-shadow: none; backdrop-filter: none;
+  padding: 0; margin: 6px 0 0; color: var(--gray-3); }
+#askhistlist .doc { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; }
+#askhistlist .doc .nm { flex: none; width: 100%; white-space: normal; overflow-wrap: break-word;
+  font-size: 14px; line-height: 1.5; }
+#askhistlist .asktag { max-width: 100%; white-space: normal; font-size: 10px; }
+.pagehead-row { flex-wrap: wrap; }
+.pagehead-row > div { flex: 1 1 500px; }
+.workspace-badge { max-width: 100%; white-space: normal; }
+.passage-overlay { z-index: 2; }
+.passage-overlay rect { stroke: var(--teal-ink); stroke-width: 2.5; fill: rgba(251,226,50,.22); }
+.source-selection { color: var(--rs-black); background: var(--yellow-3);
+  border: 2px solid var(--teal-ink); border-radius: 4px; padding: 2px;
+  box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.source-chunk.cited { border: 2px solid var(--teal-ink); }
+.source-body > .source-text { min-height: 0; }
+.source-highlight-note { margin: 0 0 14px; color: var(--gray-7); font-size: 14px; }
+.inline-source header { gap: 12px; }
+.inline-source header .grow { flex: 1 1 220px; }
+.inline-source header select { flex: 1 1 220px; width: auto; min-width: 0; }
+.inline-source header .btn { flex: 0 0 auto; }
+.source-banner .lbl { font-size: 14px; }
+#askdetail .welcome-panel { max-width: 740px; margin: 24px auto; padding: 28px 32px; }
+#askdetail .welcome-panel h2 { font-size: clamp(26px, 2.6vw, 34px); max-width: 28ch; }
+#askdetail .welcome-panel > p { font-size: 16px; max-width: 56ch; }
+#askdetail .welcome-panel .eyebrow { font-size: 11px; }
+#askdetail .answercard { font-size: 16px; line-height: 1.65; }
+#askdetail .source-banner { padding: 12px 16px; }
+.answer-tools { display: flex; justify-content: flex-end; margin: -4px 0 12px; }
+.trace-dialog { width: min(1040px, calc(100vw - 40px)); height: min(820px, calc(100dvh - 48px));
+  max-width: none; max-height: none; padding: 0; overflow: hidden; border: 1px solid var(--gray-3);
+  border-radius: 16px; background: rgba(255,255,255,.97); color: var(--rs-black);
+  box-shadow: var(--glass-active); }
+.trace-dialog::backdrop { background: rgba(22,22,22,.55); backdrop-filter: blur(8px); }
+.trace-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.trace-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
+  padding: 24px; border-bottom: 1px solid var(--gray-2); flex-shrink: 0; }
+.trace-head h2 { font-size: 26px; }
+.trace-head .eyebrow { margin: 0 0 8px; }
+.trace-head .meta { margin: 8px 0 0; overflow-wrap: anywhere; }
+.trace-body { flex: 1; min-height: 0; overflow-y: auto; padding: 24px;
+  background: var(--gray-1); overscroll-behavior: contain; }
+.trace-body .stage { margin-bottom: 14px; }
+@media (max-width: 600px) {
+  header.site { padding: 12px 16px; }
+  .pagehead { padding: 22px 20px; }
+  .welcome-panel { padding: 24px; }
+  #askdetail .welcome-panel { padding: 24px 20px; margin: 12px auto; }
+  #askdetail .welcome-panel h2 { font-size: 28px; }
+  .trace-dialog { width: calc(100vw - 20px); height: calc(100dvh - 24px); }
+  .trace-head, .trace-body { padding: 18px; }
+  .trace-head h2 { font-size: 24px; }
+  .trace-head .meta { font-size: 14px; }
+  .card h2, .member-dialog h2 { font-size: 26px; }
+}

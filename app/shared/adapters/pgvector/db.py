@@ -6,15 +6,17 @@ connection so a Python list[float]/np.ndarray adapts to/from the SQL `vector`
 type transparently. register_vector() is cheap and idempotent to call on every
 checkout (psycopg2 pools have no native "new connection" hook to call it once).
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import psycopg2.extras
 from pgvector.psycopg2 import register_vector
 
 from app.shared.adapters.postgres.db import get_pool
+from app.shared.execution import cancel_on_budget, check_execution
 
 
 @contextmanager
@@ -27,17 +29,11 @@ def transaction(dsn: str) -> Iterator[psycopg2.extras.RealDictCursor]:
         try:
             register_vector(conn)
         except psycopg2.ProgrammingError:
-            # On a brand-new database the `vector` extension doesn't exist yet --
-            # PgVectorStore.ensure_collection()'s very first transaction IS what
-            # runs `CREATE EXTENSION IF NOT EXISTS vector`. register_vector's
-            # lookup is a plain SELECT (raises its own ProgrammingError in
-            # Python after finding no rows, not a failed statement), so the
-            # transaction is not left aborted -- just proceed unregistered for
-            # this one checkout. Every later checkout re-registers successfully
-            # once the extension exists.
             pass
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            yield cur
+            with cancel_on_budget(conn.cancel):
+                yield cur
+        check_execution()
         conn.commit()
     except Exception:
         conn.rollback()

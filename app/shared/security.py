@@ -1,5 +1,6 @@
 """API bearer-token hashing: tokens are shown to the caller once, at mint time,
 and only ever stored/compared as a one-way hash from then on."""
+
 from __future__ import annotations
 
 import hashlib

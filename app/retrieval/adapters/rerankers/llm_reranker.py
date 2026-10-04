@@ -14,12 +14,12 @@ If the response can't be parsed, or its length doesn't match the input, this
 falls back to all-zero scores -- `_rerank`'s sort is stable, so a fallback
 preserves the incoming (fused dense+BM25) order instead of raising.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Optional
 
 from app.retrieval.ports.reranker import Reranker
 
@@ -61,17 +61,23 @@ class LLMReranker(Reranker):
             reply = self._gateway.chat(messages, model=self._model, temperature=0.0)
             scores = self._parse(reply, len(documents))
         except Exception as e:
-            log.warning("llm rerank call failed, falling back to stable order", extra={
-                "event": "llm_rerank_failed", "error": str(e)[:200],
-            })
+            log.warning(
+                "llm rerank call failed, falling back to stable order",
+                extra={
+                    "event": "llm_rerank_failed",
+                    "error": str(e)[:200],
+                },
+            )
         if scores is None:
-            log.warning("llm rerank response unparseable, falling back to stable order",
-                        extra={"event": "llm_rerank_unparseable"})
+            log.warning(
+                "llm rerank response unparseable, falling back to stable order",
+                extra={"event": "llm_rerank_unparseable"},
+            )
             return [0.0] * len(documents)
         return scores
 
     @staticmethod
-    def _parse(reply: str, expected_len: int) -> Optional[list[float]]:
+    def _parse(reply: str, expected_len: int) -> list[float] | None:
         """Extract a JSON array of `expected_len` floats from the reply, or None."""
         match = _ARRAY_RE.search(reply)
         if not match:

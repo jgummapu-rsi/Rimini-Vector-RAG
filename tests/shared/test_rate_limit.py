@@ -1,4 +1,5 @@
 """app.shared.rate_limit.RateLimiter: fixed-window, per-key, thread-safe."""
+
 import threading
 
 import pytest
@@ -12,7 +13,7 @@ def test_allows_up_to_max_hits_then_rejects():
     assert rl.hit("a") is True
     assert rl.hit("a") is True
     assert rl.hit("a") is False
-    assert rl.hit("a") is False  # stays rejected, doesn't "use up" further budget
+    assert rl.hit("a") is False
 
 
 def test_keys_are_independent():
@@ -31,7 +32,7 @@ def test_window_expiry_lets_a_key_recover(monkeypatch):
     assert rl.hit("a") is True
     assert rl.hit("a") is False
 
-    now[0] += 10.001  # first two hits are now outside the trailing window
+    now[0] += 10.001
     assert rl.hit("a") is True
 
 
@@ -52,9 +53,9 @@ def test_expired_key_is_pruned_from_internal_state(monkeypatch):
     rl.hit("a")
     assert "a" in rl._hits
     now[0] += 5.001
-    rl.hit("b")  # unrelated call, just to advance/trigger cleanup on "a" too
+    rl.hit("b")
     rl.hit("a")
-    assert list(rl._hits["a"]) == [now[0]]  # only the fresh hit remains
+    assert list(rl._hits["a"]) == [now[0]]
 
 
 @pytest.mark.parametrize("bad_kwargs", [{"max_hits": 0}, {"max_hits": -1}])

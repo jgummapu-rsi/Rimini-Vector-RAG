@@ -1,12 +1,15 @@
+import hashlib
 import json
 import logging
 
+from app.ingest.pipeline.runner import run_job
+from app.shared.domain.models import Document, Job, JobStage, JobStatus
+from app.shared.ids import new_object_id
 from app.shared.observability import JsonFormatter
 
 
 def test_json_formatter_emits_valid_json_with_extra_fields():
-    rec = logging.LogRecord("pipeline", logging.INFO, __file__, 10,
-                            "stage complete", (), None)
+    rec = logging.LogRecord("pipeline", logging.INFO, __file__, 10, "stage complete", (), None)
     rec.event = "stage"
     rec.job_id = "j1"
     rec.stage = "embed"
@@ -33,22 +36,33 @@ def test_metrics_incr_and_snapshot(container):
 
 
 def test_pipeline_records_stage_metrics(container, tenant, files):
-    import hashlib
-    from app.shared.domain.models import Document, Job, JobStage, JobStatus
-    from app.shared.ids import new_object_id
-    from app.ingest.pipeline.runner import run_job
 
     data = files["data.csv"]
     sha = hashlib.sha256(data).hexdigest()
     blob = container.blob.put(tenant["id"], sha, ".csv", data)
-    doc = Document(id=new_object_id(), tenant_id=tenant["id"],
-                   owner_user_id=tenant["admin_id"], source_type="table",
-                   blob_path=blob, content_sha256=sha, mime="text/csv",
-                   filename="data.csv", visibility="private", acl_user_ids=[])
+    doc = Document(
+        id=new_object_id(),
+        tenant_id=tenant["id"],
+        owner_user_id=tenant["admin_id"],
+        source_type="table",
+        blob_path=blob,
+        content_sha256=sha,
+        mime="text/csv",
+        filename="data.csv",
+        visibility="private",
+        acl_user_ids=[],
+    )
     container.metadata.create_document(doc)
-    container.metadata.create_job(Job(id=new_object_id(), document_id=doc.id,
-        tenant_id=tenant["id"], stage=JobStage.PARSE.value,
-        status=JobStatus.QUEUED.value, attempts=0))
+    container.metadata.create_job(
+        Job(
+            id=new_object_id(),
+            document_id=doc.id,
+            tenant_id=tenant["id"],
+            stage=JobStage.PARSE.value,
+            status=JobStatus.QUEUED.value,
+            attempts=0,
+        )
+    )
     run_job(container, container.queue.claim_next())
 
     snap = container.metrics.snapshot()

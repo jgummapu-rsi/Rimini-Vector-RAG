@@ -1,250 +1,205 @@
-"""Real end-to-end retrieval benchmark on gold qrels — Postgres/pgvector, no
-in-memory shortcut, no LLM judge.
+"""SciFact retrieval through real PostgreSQL/pgvector, with optional reranking.
 
-Unlike `eval/run_retrieval.py` (which ranks with an in-memory numpy matmul),
-this script goes through the REAL storage + retrieval path: the actual
-pgvector adapter (`app.shared.adapters.pgvector.vector_store.PgVectorStore`) backed by
-a real Postgres database, with the exact same `VectorStore.search()` method
-production traffic uses (SQL HNSW ANN query + real RRF fusion against BM25 via
-`app.shared.adapters.bm25`).
+Uses disposable evaluation storage and the active embedder's tokenizer. Scores
+document-level recall/nDCG at 1, 3, 5, 10 and MRR@10 after deduplicating chunks.
 
-Dataset : BEIR SciFact (via ir_datasets) — 5,183 docs, 300 queries, gold qrels.
-Pipeline under test : real chunker + real MiniLM embeddings + real Postgres/
-pgvector storage + real hybrid (dense+BM25 RRF) search — the actual
-production code path, not a shortcut.
-Metrics : recall@k, nDCG@k (k in 1,3,5,10), MRR@10 — computed directly from
-qrels. All pure math, no LLM involved.
-
-Requires .env: METADATA_BACKEND=postgres, VECTOR_BACKEND=pgvector, and a
-reachable DATABASE_URL with the pgvector extension available.
-
-Run:  python -m eval.run_retrieval_postgres  [max_docs]
+Run: python -m eval.run_retrieval_postgres [max_docs] [--rerank] [--fetch-k N]
+Requires EVAL_DATABASE_URL and EVAL_REDIS_URL.
 """
+
 from __future__ import annotations
 
-import math
-import sys
+import argparse
+import json
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
 
+import ir_datasets
 import numpy as np
 import pandas as pd
 
-import ir_datasets
-from app.shared.adapters.postgres.db import transaction
-from app.shared.config import settings
+from app.retrieval.rag.access import access_predicate
+from app.retrieval.rag.query import _rerank, _retrieve
 from app.shared.container import build_container
-from app.shared.domain.models import Modality
-from app.ingest.pipeline.chunker import chunk_elements
-from app.ingest.pipeline.elements import Element
-from app.shared.ports.vector_store import VectorPoint
+from app.shared.domain.models import Principal, Role
+from eval.run_retrieval import _dedup_hit_docs, _ndcg_at_k, _recall_at_k, _rr_at_10
+from eval.storage import isolated_evaluation, populate_scifact, populate_scifact_pipeline
 
 K_VALUES = [1, 3, 5, 10]
-FETCH_K = 20  # chunks fetched BEFORE dedup to docs -- wider than the largest
-              # scored K (10) so a document-dominant chunk cluster can't crowd
-              # other relevant docs out of the ranked doc list
-EVAL_TENANT_NAME = "scifact-eval-postgres-benchmark"
-OUT_XLSX = "eval/retrieval_postgres_results.xlsx"
 
 
-def _embed_batched(embedder, texts, batch=128):
-    out = []
-    for i in range(0, len(texts), batch):
-        out.extend(embedder.embed(texts[i:i + batch]))
-        if (i // batch) % 10 == 0:
-            print(f"  embedded {min(i + batch, len(texts))}/{len(texts)}", end="\r")
-    print()
-    return out
+def _positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
 
 
-def _dedupe_docs(ranked_chunk_doc_ids):
-    seen, ranked = set(), []
-    for d in ranked_chunk_doc_ids:
-        if d not in seen:
-            seen.add(d)
-            ranked.append(d)
-    return ranked
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("max_docs", nargs="?", type=_positive_int)
+    parser.add_argument(
+        "--rerank", action="store_true", help="Use production candidate widening and reranking"
+    )
+    parser.add_argument(
+        "--fetch-k",
+        type=_positive_int,
+        default=20,
+        help="Chunks retained before document deduplication (default: 20)",
+    )
+    parser.add_argument(
+        "--output", type=Path, help="Output workbook; defaults to the selected mode's result file"
+    )
+    parser.add_argument(
+        "--pipeline",
+        action="store_true",
+        help="Run original text through blobs, queue, parsing and atomic publication",
+    )
+    parser.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=4,
+        help="Concurrent ingestion workers for --pipeline",
+    )
+    return parser.parse_args(argv)
 
 
-def _recall_at_k(ranked, rel, k):
-    if not rel:
-        return None
-    return len(set(ranked[:k]) & rel) / len(rel)
+@isolated_evaluation
+def main(settings, args=None) -> None:
+    args = args if args is not None else _parse_args()
+    if args.rerank and settings.reranker_provider == "none":
+        raise ValueError("--rerank requires RERANKER_PROVIDER=cross_encoder")
+    if not args.rerank:
+        settings = settings.model_copy(update={"reranker_provider": "none"})
+    settings = settings.model_copy(update={"metadata_extraction_enabled": False})
 
-
-def _ndcg_at_k(ranked, rel, k):
-    dcg = sum(1.0 / math.log2(i + 2) for i, d in enumerate(ranked[:k]) if d in rel)
-    idcg = sum(1.0 / math.log2(i + 2) for i in range(min(len(rel), k)))
-    return dcg / idcg if idcg else 0.0
-
-
-def _rr_at_10(ranked, rel):
-    for i, d in enumerate(ranked[:10]):
-        if d in rel:
-            return 1.0 / (i + 1)
-    return 0.0
-
-
-def _ensure_eval_tenant(container) -> str:
-    dsn = settings.postgres_dsn
-    with transaction(dsn) as cur:
-        cur.execute("SELECT id FROM tenants WHERE name = %s", (EVAL_TENANT_NAME,))
-        row = cur.fetchone()
-    if row:
-        tid = row["id"]
-        print(f"reusing eval tenant {tid} ({EVAL_TENANT_NAME})")
-    else:
-        tid = container.metadata.create_tenant(EVAL_TENANT_NAME)
-        print(f"created eval tenant {tid} ({EVAL_TENANT_NAME})")
-
-    with transaction(dsn) as cur:
-        cur.execute("DELETE FROM vector_chunks WHERE tenant_id = %s", (tid,))
-        print(f"wiped {cur.rowcount} stale vector_chunks rows for this tenant")
-    return tid
-
-
-def main() -> None:
-    if settings.metadata_backend != "postgres" or settings.vector_backend != "pgvector":
-        raise RuntimeError(
-            "This benchmark requires METADATA_BACKEND=postgres and "
-            "VECTOR_BACKEND=pgvector in .env (real Postgres/pgvector, no "
-            f"shortcut) — got METADATA_BACKEND={settings.metadata_backend} "
-            f"VECTOR_BACKEND={settings.vector_backend}"
-        )
-
-    max_docs = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    ds = ir_datasets.load("beir/scifact/test")
-
-    qrels = defaultdict(dict)
-    for q in ds.qrels_iter():
-        qrels[q.query_id][q.doc_id] = q.relevance
-    queries = {q.query_id: q.text for q in ds.queries_iter()}
-    query_ids = [qid for qid in qrels if qid in queries]
-
-    corpus = []
-    for i, d in enumerate(ds.docs_iter()):
-        if max_docs and i >= max_docs:
+    dataset = ir_datasets.load("beir/scifact/test")
+    corpus_ids = set()
+    for index, document in enumerate(dataset.docs_iter()):
+        if args.max_docs is not None and index >= args.max_docs:
             break
-        corpus.append((d.doc_id, (d.title + "\n\n" + d.text).strip()))
-    print(f"corpus: {len(corpus)} docs | queries (pre-filter): {len(query_ids)}\n")
+        corpus_ids.add(document.doc_id)
+    qrels = defaultdict(set)
+    for relevance in dataset.qrels_iter():
+        if relevance.relevance > 0:
+            qrels[relevance.query_id].add(relevance.doc_id)
+    queries = [query for query in dataset.queries_iter() if qrels[query.query_id] & corpus_ids]
+    if not queries:
+        raise ValueError("Selected corpus has no queries with relevant documents")
 
-    doc_set = {d for d, _ in corpus}
-    query_ids = [qid for qid in query_ids if any(d in doc_set for d in qrels[qid])]
-    print(f"queries (with a relevant doc in corpus): {len(query_ids)}\n")
+    container = build_container(settings)
+    try:
+        gateway_calls = defaultdict(int)
+        original_post = container.gateway._post
 
-    container = build_container()
-    tid = _ensure_eval_tenant(container)
+        def embeddings_only(path, payload):
+            if path != "/v1/embeddings":
+                raise AssertionError("Non-LLM evaluation attempted a generation call")
+            gateway_calls[path] += 1
+            return original_post(path, payload)
 
-    print("chunking corpus (real chunker)...")
-    chunk_texts, chunk_doc_ids = [], []
-    for doc_id, text in corpus:
-        for ch in chunk_elements([Element(text, Modality.TEXT.value,
-                                          "text", "text_layer", 0, {})]):
-            chunk_texts.append(ch.text)
-            chunk_doc_ids.append(doc_id)
-    print(f"  {len(chunk_texts)} chunks\n")
+        container.gateway._post = embeddings_only
+        access = None
+        ingest = {}
+        if args.pipeline:
+            tenant_id, owner, ingest = populate_scifact_pipeline(
+                container, dataset, "scifact-eval-postgres-benchmark", args.max_docs, args.workers
+            )
+            access = access_predicate(Principal(tenant_id, owner, Role.ADMIN))
+        else:
+            tenant_id = populate_scifact(
+                container, dataset, "scifact-eval-postgres-benchmark", max_docs=args.max_docs
+            )
+        print(f"corpus: {len(corpus_ids)} docs | queries: {len(queries)} | rerank: {args.rerank}")
+        rows = []
+        started = time.monotonic()
+        for index, query in enumerate(queries, 1):
+            query_started = time.monotonic()
+            hits = _retrieve(container, tenant_id, query.text, args.fetch_k, access=access)
+            candidates = len(hits)
+            if args.rerank:
+                hits, _ = _rerank(container, query.text, hits, args.fetch_k)
+            ranked = _dedup_hit_docs(hits, max(K_VALUES))
+            relevant = qrels[query.query_id]
+            row = {
+                "query_id": query.query_id,
+                "question": query.text,
+                "latency_ms": (time.monotonic() - query_started) * 1000,
+                "candidates": candidates,
+                "returned_chunks": len(hits),
+                "ranked_doc_ids": json.dumps(ranked),
+                "relevant_doc_ids": json.dumps(sorted(relevant)),
+            }
+            for k in K_VALUES:
+                row[f"recall@{k}"] = _recall_at_k(ranked, relevant, k)
+                row[f"ndcg@{k}"] = _ndcg_at_k(ranked, relevant, k)
+            row["rr@10"] = _rr_at_10(ranked, relevant)
+            rows.append(row)
+            if index % 25 == 0 or index == len(queries):
+                print(
+                    f"Queried {index}/{len(queries)} in {time.monotonic() - started:.1f}s",
+                    flush=True,
+                )
 
-    print("embedding chunks (real MiniLM)...")
-    t0 = time.time()
-    vectors = _embed_batched(container.embedder, chunk_texts)
-    print(f"  embedded in {time.time()-t0:.0f}s\n")
-
-    print("upserting into real Postgres/pgvector...")
-    t0 = time.time()
-    ordinals: dict[str, int] = defaultdict(int)
-    batch: list[VectorPoint] = []
-    upserted = 0
-    for doc_id, text, vec in zip(chunk_doc_ids, chunk_texts, vectors):
-        ordinal = ordinals[doc_id]
-        ordinals[doc_id] += 1
-        batch.append(VectorPoint(
-            chunk_id=f"{doc_id}::{ordinal:05d}",
-            tenant_id=tid,
-            vector=list(vec),
-            payload={"_id": doc_id, "scope": "tenant", "content": text, "modality": "text"},
-        ))
-        if len(batch) >= 500:
-            container.vectors.upsert(batch)
-            upserted += len(batch)
-            print(f"  upserted {upserted}/{len(chunk_texts)}", end="\r")
-            batch = []
-    if batch:
-        container.vectors.upsert(batch)
-        upserted += len(batch)
-    print(f"\n  {upserted} chunks upserted in {time.time()-t0:.0f}s "
-          f"(pgvector count for tenant: {container.vectors.count(tid)})\n")
-
-    print(f"running {len(query_ids)} queries through real search() "
-          f"(fetch_k={FETCH_K} chunks, hybrid, then dedup to docs)...")
-    agg = defaultdict(list)
-    per_query_rows = []
-    t0 = time.time()
-    for n, qid in enumerate(query_ids, 1):
-        qtext = queries[qid]
-        rel = {d for d, r in qrels[qid].items() if r > 0}
-        qvec = container.embedder.embed([qtext])[0]
-        hits = container.vectors.search(tid, list(qvec), top_k=FETCH_K, query_text=qtext)
-        ranked = _dedupe_docs(hit.payload["_id"] for hit in hits)
-
-        row = {"query_id": qid, "question": qtext}
+        summary = {}
         for k in K_VALUES:
-            r = _recall_at_k(ranked, rel, k)
-            nd = _ndcg_at_k(ranked, rel, k)
-            agg[f"recall@{k}"].append(r)
-            agg[f"ndcg@{k}"].append(nd)
-            row[f"recall@{k}"] = r
-            row[f"ndcg@{k}"] = nd
-        rr = _rr_at_10(ranked, rel)
-        agg["mrr@10"].append(rr)
-        row["rr@10"] = rr
-        per_query_rows.append(row)
-        if n % 20 == 0:
-            print(f"  {n}/{len(query_ids)}", end="\r")
-    print(f"\n  queried in {time.time()-t0:.0f}s\n")
-
-    summary = {"metric": [], "value": []}
-    print("=== HYBRID (real pgvector search: dense HNSW + BM25 RRF fusion) ===")
-    print(f"{'metric':12} {'score':>7}")
-    for k in K_VALUES:
-        v = float(np.mean(agg[f"recall@{k}"]))
-        print(f"recall@{k:<5} {v:>7.4f}")
-        summary["metric"].append(f"recall@{k}")
-        summary["value"].append(v)
-    for k in K_VALUES:
-        v = float(np.mean(agg[f"ndcg@{k}"]))
-        print(f"ndcg@{k:<7} {v:>7.4f}")
-        summary["metric"].append(f"ndcg@{k}")
-        summary["value"].append(v)
-    mrr = float(np.mean(agg["mrr@10"]))
-    print(f"{'mrr@10':12} {mrr:>7.4f}")
-    summary["metric"].append("mrr@10")
-    summary["value"].append(mrr)
-
-    for k2, v2 in [
-        ("corpus_docs", len(corpus)),
-        ("corpus_chunks", len(chunk_texts)),
-        ("num_queries", len(query_ids)),
-        ("fetch_k", FETCH_K),
-        ("tenant_id", tid),
-        ("run_at_utc", datetime.now(timezone.utc).isoformat()),
-    ]:
-        summary["metric"].append(k2)
-        summary["value"].append(v2)
-
-    with pd.ExcelWriter(OUT_XLSX, engine="openpyxl") as writer:
-        pd.DataFrame(summary).to_excel(writer, sheet_name="summary", index=False)
-        pd.DataFrame(per_query_rows).to_excel(writer, sheet_name="per_query", index=False)
-    print(f"\nresults written -> {OUT_XLSX}")
-
-    print(f"\nNote: search() fetches the top-{FETCH_K} CHUNKS per query, then "
-          "dedups to parent documents before scoring at k<=10. If >1 chunk "
-          f"per document still crowds the {FETCH_K}-chunk pool, the deduped "
-          "doc list can be shorter than 10 -- less likely than at fetch_k=10, "
-          "but not eliminated.")
-    print("Reference: published all-MiniLM-L6-v2 on SciFact is ~nDCG@10 0.64; "
-          "BM25 is ~nDCG@10 0.66. Numbers in that range mean the harness is honest.")
+            for metric in (f"recall@{k}", f"ndcg@{k}"):
+                summary[metric] = float(np.mean([row[metric] for row in rows]))
+        summary["mrr@10"] = float(np.mean([row["rr@10"] for row in rows]))
+        print(summary)
+        summary.update(
+            corpus_docs=len(corpus_ids),
+            corpus_chunks=container.vectors.count(tenant_id),
+            num_queries=len(queries),
+            fetch_k=args.fetch_k,
+            rerank=args.rerank,
+            reranker_model=settings.reranker_model if args.rerank else "none",
+            candidate_multiplier=settings.rerank_candidate_multiplier if args.rerank else 1,
+            min_candidates=settings.rerank_min_candidates if args.rerank else args.fetch_k,
+            embedding_profile_id=container.embedder.profile.id,
+            embedding_model=container.embedder.profile.model,
+            embedding_dimensions=container.embedder.dim,
+            pipeline_ingestion=args.pipeline,
+            generation_calls=0,
+            embedding_requests=gateway_calls["/v1/embeddings"],
+            latency_p50_ms=float(np.percentile([r["latency_ms"] for r in rows], 50)),
+            latency_p95_ms=float(np.percentile([r["latency_ms"] for r in rows], 95)),
+            latency_mean_ms=float(np.mean([r["latency_ms"] for r in rows])),
+            empty_results=sum(row["returned_chunks"] == 0 for row in rows),
+            tenant_id=tenant_id,
+            query_seconds=time.monotonic() - started,
+            run_at_utc=datetime.now(UTC).isoformat(),
+        )
+        summary.update(ingest)
+        output = args.output or Path(
+            "eval/retrieval_postgres_rerank_results.xlsx"
+            if args.rerank
+            else "eval/retrieval_postgres_results.xlsx"
+        )
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame(summary.items(), columns=["metric", "value"]).to_excel(
+                writer, sheet_name="summary", index=False
+            )
+            pd.DataFrame(rows).to_excel(writer, sheet_name="per_query", index=False)
+        output.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "summary": summary,
+                    "embedding_profile": asdict(container.embedder.profile),
+                    "queries": rows,
+                },
+                indent=2,
+            )
+        )
+        print(
+            f"Results written to {output}; chunk deduplication can return fewer than fetch-k documents."
+        )
+    finally:
+        container.close()
 
 
 if __name__ == "__main__":
-    main()
+    main(_parse_args())
