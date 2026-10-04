@@ -60,7 +60,6 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql://postgres:rag-test-only@127.0.0.1:5432/rag_test
       TEST_REDIS_URL: redis://127.0.0.1:6379
-      RESTORE_DRILL_TOOLS_CONTAINER: ${{ job.services.postgres.id }}
       HF_HOME: ${{ github.workspace }}/.hf-cache
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +82,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run tests against disposable PostgreSQL and Redis Stack
+        env:
+          RESTORE_DRILL_TOOLS_CONTAINER: ${{ job.services.postgres.id }}
         run: python -m pytest -n 2 --dist loadfile -rs
       - name: Check inline source preview
         run: node tests/api/inline_source.test.cjs
