@@ -60,22 +60,17 @@ The chat/vision names shipped in `.env.example` are deployment-specific defaults
 replace them with aliases your gateway actually serves. The embedding deployment
 must support 1,536-dimensional output. Keep `.env` local; it is ignored by Git.
 
-### 3. Build the image and download the layout checkpoint
+### 3. Build the image and download the Docling models
 
 ```sh
 docker compose build api worker
-docker compose run --rm --no-deps --user 0:0 \
-  -v "$(pwd)/models/doclayout-yolo:/download" \
-  api python -m scripts.download_doclayout --directory /download
+docker compose run --rm --no-deps worker python -m scripts.download_docling
 ```
 
-The download command verifies the checkpoint's SHA-256 and saves it in
-`models/doclayout-yolo/`. It runs a one-off container using the built image; no host
-Python installation is needed. API and worker mount this directory read-only.
-
-The example enables layout detection for visual citations. If you intentionally
-disable it with `LAYOUT_ENABLED=false`, the checkpoint download is unnecessary;
-native text extraction and source citations still work without layout inference.
+The one-off container provisions CPU layout, table and OCR models in the shared
+model volume and writes a model manifest. No host Python installation is needed.
+Allow at least 16 GiB host RAM for the full stack. See [Docling setup](docs/docling.md)
+for CPU sizing, configuration and the native parser option.
 
 ### 4. Start and check readiness
 
@@ -208,8 +203,10 @@ an arbitrary variable to `.env` does not automatically pass it to containers.
 | `RERANKER_PROVIDER` | `cross_encoder`; `none` disables reranking |
 | `CACHE_INDEX_NAME` | Redis answer-cache namespace, specific to the embedding profile |
 | `METADATA_EXTRACTION_ENABLED` | `true`; best-effort author/topic enrichment |
-| `LAYOUT_ENABLED` | `true` in `.env.example`; requires the downloaded checkpoint |
-| `PARSE_TIMEOUT_SECONDS` | `240`; native parser wall-time budget |
+| `PARSING_BACKEND` | `docling`; CPU PDF/image extraction with layout, OCR and tables |
+| `LAYOUT_ENABLED` | `false`; optional YOLO layout for the native parser |
+| `PARSE_TIMEOUT_SECONDS` | `1800`; parser wall-time budget |
+| `PARSE_MEMORY_MB` | `16384`; parser virtual address-space ceiling |
 | `DATABASE_URL`, `REDIS_URL` | Host-run storage addresses; Compose supplies internal addresses |
 | `DATA_DIR` | `data`; original uploads and extraction artifacts |
 
@@ -246,7 +243,7 @@ for the app, tests, notebooks, and evaluations; installation includes those tool
 
 ```sh
 docker compose --profile development up -d postgres redis
-python -m scripts.download_doclayout
+python -m scripts.download_docling
 python -m scripts.init_database
 python -m uvicorn app.api.app:app --host 127.0.0.1 --port 8000
 ```
@@ -465,3 +462,10 @@ ruff.toml
 `data/`, `models/`, generated evaluation reports, local agent files, and caches are
 local artifacts excluded by [`.gitignore`](.gitignore). This README is the setup
 and operations guide; the live `/docs` page is the API reference.
+
+## Docling parsing
+
+PDF/image ingestion uses a pinned, vendored Docling CPU pipeline. Install with
+`pip install -r requirements.txt`, then provision models with
+`python -m scripts.download_docling` before starting the worker. See
+[Docling setup, CPU sizing and architecture](docs/docling.md).

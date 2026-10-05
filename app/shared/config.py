@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -131,6 +132,15 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
 
     max_pdf_pages: int = 500
+    parsing_backend: Literal["docling", "native"] = "docling"
+    docling_artifacts_path: str = "models/docling"
+    docling_num_threads: int = Field(default=4, ge=1, le=32)
+    docling_ocr_language: str = "en"
+    docling_ocr_model_size: Literal["tiny", "small", "medium"] = "small"
+    docling_force_full_page_ocr: bool = False
+    docling_table_mode: Literal["accurate", "fast"] = "accurate"
+    docling_picture_description: bool = True
+    docling_batch_size: int = Field(default=1, ge=1, le=16)
     layout_enabled: bool = False
     layout_model_path: Path = Path(
         "models/doclayout-yolo/doclayout_yolo_docstructbench_imgsz1024.pt"
@@ -139,8 +149,9 @@ class Settings(BaseSettings):
     layout_image_size: int = Field(default=1024, ge=320, le=2048)
     layout_confidence: float = Field(default=0.2, ge=0, le=1, allow_inf_nan=False)
     max_image_pixels: int = 40_000_000
-    parse_timeout_seconds: float = Field(default=120.0, gt=0, allow_inf_nan=False)
-    parse_memory_mb: int = Field(default=2048, gt=0)
+    parse_timeout_seconds: float = Field(default=1800.0, gt=0, allow_inf_nan=False)
+    # Address-space ceiling, not expected RSS. Torch/ONNX map sizeable arenas.
+    parse_memory_mb: int = Field(default=16384, gt=0)
     max_zip_entries: int = Field(default=10000, gt=0)
     max_zip_expanded_bytes: int = Field(default=256 * 1024 * 1024, gt=0)
     max_zip_expansion_ratio: int = Field(default=200, gt=0)

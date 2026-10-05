@@ -1,6 +1,6 @@
 target-version = "py312"
 line-length = 100
-extend-exclude = [".venv*", ".claude", "data", "models", "graphify-out", "notebooks"]
+extend-exclude = [".venv*", ".claude", "data", "models", "graphify-out", "notebooks", "vendor"]
 
 [lint]
 select = ["E", "F", "W", "I", "B", "UP", "PLC0415"]

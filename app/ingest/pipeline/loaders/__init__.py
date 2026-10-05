@@ -10,8 +10,18 @@ from __future__ import annotations
 import os
 from collections import Counter
 
+from app.ingest.pipeline.docling_config import uses_docling
 from app.ingest.pipeline.elements import Element
-from app.ingest.pipeline.loaders import docx_loader, excel, image, markdown, pdf, table, text
+from app.ingest.pipeline.loaders import (
+    docling_loader,
+    docx_loader,
+    excel,
+    image,
+    markdown,
+    pdf,
+    table,
+    text,
+)
 from app.ingest.pipeline.safety import UnsafeContentError
 from app.shared.config import Settings
 from app.shared.gateway.client import LiteLLMClient
@@ -42,6 +52,8 @@ def extract_document(
     """Dispatch to the per-extension loader, passing file-safety limits through."""
     ext = os.path.splitext(filename or "")[1].lower()
     loader = _DISPATCH.get(ext)
+    if uses_docling(filename, cfg):
+        loader = docling_loader.extract
     if loader is None:
         raise ValueError(f"no loader for extension '{ext}'")
     elements = loader(data, filename, gateway, cfg)

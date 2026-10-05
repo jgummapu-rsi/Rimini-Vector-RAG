@@ -13,6 +13,10 @@ __pycache__/
 graphify-out/
 sample_pdfs/
 models/
+!vendor/docling/docling/models/
+!vendor/docling/docling/models/**
+!vendor/docling/docling/experimental/models/
+!vendor/docling/docling/experimental/models/**
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

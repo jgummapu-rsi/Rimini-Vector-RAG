@@ -7,6 +7,11 @@ data/
 secrets/
 backups/
 models/
+# Docling's models directory contains Python runtime source, not checkpoints.
+!vendor/docling/docling/models/
+!vendor/docling/docling/models/**
+!vendor/docling/docling/experimental/models/
+!vendor/docling/docling/experimental/models/**
 .hf-cache/
 *.pem
 *.key

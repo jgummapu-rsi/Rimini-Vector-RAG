@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import multiprocessing
 import os
 import resource
@@ -15,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from types import SimpleNamespace
 
+from app.ingest.pipeline.docling_config import options_dict, parser_profile, uses_docling
 from app.ingest.pipeline.elements import Element
 from app.ingest.pipeline.layout import detect_layout, layout_profile
 from app.ingest.pipeline.loaders import extract_document
@@ -22,7 +24,7 @@ from app.ingest.pipeline.safety import UnsafeContentError, check_archive_expansi
 
 log = logging.getLogger(__name__)
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
-PARSER_REVISION = "structure-reading-order-v5"
+PARSER_REVISION = "docling-structured-elements-v6"
 
 
 def _transfer(connection, data: bytes | None, size: int, deadline: float | None) -> bytes:
@@ -127,13 +129,19 @@ async def _vision_with_lease(
 def _native_child(connection, filename: str, data: bytes, config: dict) -> None:
     try:
         cfg = SimpleNamespace(**config)
+        threads = cfg.docling_num_threads if uses_docling(filename, cfg) else 1
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            os.environ[name] = str(threads)
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
         ceiling = cfg.parse_memory_mb * 1024 * 1024
         # RLIMIT_AS cannot reclaim memory inherited from the forkserver. Reject
         # a budget already below resident usage before limiting error reporting.
         if resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024 > ceiling:
             raise UnsafeContentError("Parser memory budget is below its resident runtime")
         resource.setrlimit(resource.RLIMIT_AS, (ceiling, ceiling))
-        cpu_seconds = max(1, int(cfg.parse_timeout_seconds) + 1)
+        # RLIMIT_CPU sums CPU time across threads, unlike the wall-clock budget.
+        cpu_seconds = max(1, math.ceil(cfg.parse_timeout_seconds * threads) + 1)
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
 
         check_archive_expansion(data, filename, cfg)
@@ -164,7 +172,8 @@ def extract_bounded(
 ) -> tuple[list[Element], dict]:
     if os.name != "posix":
         raise RuntimeError("Bounded parsing requires the supported Linux runtime")
-    profile = layout_profile(cfg)
+    parsing = parser_profile(filename, cfg)
+    profile = {"enabled": False} if uses_docling(filename, cfg) else layout_profile(cfg)
     result_key = hashlib.sha256(
         json.dumps(
             {
@@ -173,6 +182,7 @@ def extract_bounded(
                 "content": hashlib.sha256(data).hexdigest(),
                 "model": getattr(gateway, "vision_model", ""),
                 "layout": profile,
+                "parsing": parsing,
                 "limits": {
                     name: getattr(cfg, name)
                     for name in (
@@ -220,6 +230,9 @@ def extract_bounded(
         )
     }
     native_config["layout_enabled"] = profile["enabled"]
+    native_config.update(options_dict(cfg))
+    if "docling_artifacts_path" in parsing:
+        native_config["docling_artifacts_path"] = parsing["docling_artifacts_path"]
     process = context.Process(target=_native_child, args=(child, filename, data, native_config))
     started = time.monotonic()
     try:

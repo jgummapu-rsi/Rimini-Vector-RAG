@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2
 # onnxruntime, psycopg2-binary, pandas/lxml/pillow all ship manylinux wheels for
 # this base image -- no compiler / apt-get build-essential needed.
 COPY requirements.txt ./
+COPY vendor/docling/ ./vendor/docling/
 RUN pip install --no-cache-dir -r requirements.txt && pip check
 
 COPY app/ ./app/
