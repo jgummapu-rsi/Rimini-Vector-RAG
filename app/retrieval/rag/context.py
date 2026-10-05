@@ -9,17 +9,24 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
+from app.retrieval.rag.evidence_quality import useful_indices
+
 
 def asks_for_collection(question: str) -> bool:
     return bool(
         re.search(
-            r"\b(all|every|each|list|enumerate|how many|complete inventory)\b", question, re.I
+            r"\b(all|list|enumerate|how many|complete inventory)\b|"
+            r"\b(?:identify|name|show|give)\s+(?:me\s+)?(?:every|each)\b",
+            question,
+            re.I,
         )
     )
 
 
 def matching_roster(question: str, text: str) -> bool:
     """Match a requested collection to a table's schema, not its incidental cells."""
+    if not asks_for_collection(question):
+        return False
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     separator = next((i for i, line in enumerate(lines) if re.match(r"^\|?\s*:?-{3,}", line)), None)
     if separator is None or separator < 1 or len(lines) - separator < 3:
@@ -44,6 +51,25 @@ def matching_roster(question: str, text: str) -> bool:
         "every",
         "each",
         "name",
+        "use",
+        "uses",
+        "used",
+        "when",
+        "where",
+        "how",
+        "may",
+        "can",
+        "want",
+        "get",
+        "value",
+        "type",
+        "description",
+        "status",
+        "permitted",
+        "only",
+        "with",
+        "their",
+        "they",
     }
     # Require a collection noun in a short column label. Job titles and other
     # incidental long cells are not a list schema.
@@ -114,12 +140,21 @@ def expand_evidence(container, tenant_id, retrieval, access=None):
             cid,
         ),
     )
+    before_filter = len(ordered)
+    keep = useful_indices(
+        retrieval.question,
+        [entries[cid][0] for cid in ordered],
+        [entries[cid][2] for cid in ordered],
+    )
+    ordered = [ordered[i] for i in keep]
     rosters = [cid for cid in ordered if matching_roster(retrieval.question, entries[cid][0])]
     if asks_for_collection(retrieval.question) and rosters:
         # A table can enumerate dozens of items in two chunks. Keep every fetched
         # continuation ahead of incidental mentions; do not fill the input with
         # biographies when the requested evidence is a roster.
-        ordered = rosters + [cid for cid in ordered if cid not in rosters and cid in original][:3]
+        # A roster is additional evidence, never permission to discard the
+        # relevance-selected prose (which may contain rules or exceptions).
+        ordered = rosters + [cid for cid in ordered if cid not in rosters]
         seen_rows = {}
         for cid in rosters:
             text, score, citation = entries[cid]
@@ -149,6 +184,7 @@ def expand_evidence(container, tenant_id, retrieval, access=None):
             "roster_chunks": len(rosters),
             "coverage": "bounded_source_windows",
             "collection_requested": asks_for_collection(retrieval.question),
+            "furniture_removed": before_filter - len(keep),
         },
     ]
     return replace(

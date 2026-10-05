@@ -6,12 +6,13 @@ import pytest
 from app.retrieval.rag.grounding import (
     INSUFFICIENT,
     SYSTEM,
+    citation_occurrence_quotes,
     pack_evidence,
     source_quote,
     validate_answer,
     validate_grounded_answer,
 )
-from app.retrieval.rag.query import generate_answer_from_chunks
+from app.retrieval.rag.query import _quotes_provenance, generate_answer_from_chunks
 
 
 def test_empty_evidence_does_not_call_embedding_or_gateway(container, monkeypatch):
@@ -43,6 +44,20 @@ def test_invalid_or_unsupported_generation_abstains(raw):
 def test_valid_source_ids_supply_missing_inline_markers():
     raw = '{"status":"answered","answer":"Gokul is an AI Engineer.","source_ids":["1"]}'
     assert validate_answer(raw, {"1", "2"}) == ("Gokul is an AI Engineer. [1]", ["1"])
+
+
+@pytest.mark.parametrize("literal", ["[encrypt]", "[INFO]", "[hostname]"])
+def test_literal_bracketed_source_text_is_not_a_citation(literal):
+    raw = json.dumps({"status": "answered", "answer": f"Use {literal}. [2]", "source_ids": ["2"]})
+    assert validate_grounded_answer(raw, {"2": f"Use {literal}."})[:2] == (
+        f"Use {literal}. [2]",
+        ["2"],
+    )
+
+
+def test_unknown_numeric_citations_still_fail_with_literal_brackets():
+    raw = json.dumps({"status": "answered", "answer": "Use [encrypt]. [99]", "source_ids": ["2"]})
+    assert validate_grounded_answer(raw, {"2": "Use [encrypt]."})[0] == INSUFFICIENT
 
 
 def test_verbatim_evidence_quote_is_retained_for_region_selection():
@@ -221,3 +236,131 @@ def test_missing_visual_quote_is_repaired_and_verified_against_source(container)
     assert result.citations[0]["supporting_quote"] == "Built Spark\nautomation"
     assert result.citations[0]["provenance"]["selection_status"] == "quote"
     assert container.gateway.chat.call_count == 2
+
+
+def test_complex_answer_review_gets_all_evidence_and_replaces_unsupported_draft(container):
+    container.gateway.chat = Mock(
+        side_effect=[
+            json.dumps(
+                {
+                    "status": "answered",
+                    "answer": "Transport is allowed with approval [1]",
+                    "source_ids": ["1"],
+                }
+            ),
+            json.dumps(
+                {
+                    "status": "answered",
+                    "answer": "Transport is prohibited. Store chilled. [1] [2]",
+                    "source_ids": ["1", "2"],
+                }
+            ),
+        ]
+    )
+    result = generate_answer_from_chunks(
+        container,
+        "tenant",
+        "user",
+        "Compare transport and storage requirements.",
+        ["Transport is prohibited without exception.", "Store samples chilled."],
+        ["c1", "c2"],
+        [1, 0.9],
+        [{"chunk_id": "c1"}, {"chunk_id": "c2"}],
+        [],
+    )
+    assert "approval" not in result.answer
+    assert "Store chilled" in result.answer
+    review = json.loads(container.gateway.chat.call_args_list[1].args[0][1]["content"])
+    assert len(review["evidence"]) == 2
+    assert "approval" in review["draft"]
+
+
+def test_complex_review_can_recover_false_abstention(container):
+    container.gateway.chat = Mock(
+        side_effect=[
+            '{"status":"insufficient_evidence"}',
+            '{"status":"answered","answer":"Alpha costs 10; Beta is unspecified [1]","source_ids":["1"]}',
+        ]
+    )
+    result = generate_answer_from_chunks(
+        container,
+        "tenant",
+        "user",
+        "Compare Alpha and Beta prices.",
+        ["Alpha costs 10."],
+        ["a"],
+        [1],
+        [{"chunk_id": "a"}],
+        [],
+    )
+    assert result.answer_status == "answered"
+    assert "unspecified" in result.answer
+
+
+def test_reused_source_quotes_are_bound_to_each_claim_occurrence():
+    evidence = {
+        "3": "Lost devices are incidents. Report immediately to security@example.com. Delays may lead to discipline."
+    }
+    answer = "Loss is an incident [3]. Report immediately to security@example.com [3]. Delays can be disciplined [3]."
+    raw = json.dumps(
+        {
+            "evidence_quotes": [
+                {"source_id": "3", "occurrence": 1, "quotes": ["Lost devices are incidents."]},
+                {
+                    "source_id": "3",
+                    "occurrence": 2,
+                    "quotes": ["Report immediately", "security@example.com"],
+                },
+                {"source_id": "3", "occurrence": 3, "quotes": ["Delays may lead to discipline."]},
+                {"source_id": "3", "occurrence": 4, "quotes": ["Lost devices are incidents."]},
+            ]
+        }
+    )
+    result = citation_occurrence_quotes(raw, answer, evidence)
+    assert result["3"][1] == ["Lost devices are incidents."]
+    assert result["3"][2] == ["Report immediately", "security@example.com"]
+    assert result["3"][3] == ["Delays may lead to discipline."]
+    assert 4 not in result["3"]
+    assert (
+        citation_occurrence_quotes(
+            json.dumps({"evidence_quotes": [{"source_id": "3", "quote": "Report immediately"}]}),
+            answer,
+            evidence,
+        )
+        == {}
+    )
+
+
+def test_occurrence_quotes_reject_fabrication_and_invalid_binding():
+    raw = json.dumps(
+        {
+            "evidence_quotes": [
+                {"source_id": "1", "occurrence": 1, "quotes": ["Invented", "Actual text"]},
+                {"source_id": "2", "occurrence": 1, "quotes": ["Actual text"]},
+                {"source_id": "1", "occurrence": True, "quotes": ["Actual text"]},
+            ]
+        }
+    )
+    assert citation_occurrence_quotes(raw, "Fact [1]", {"1": "Actual text"}) == {
+        "1": {1: ["Actual text"]}
+    }
+
+
+def test_multiple_quote_regions_keep_separate_passages_without_highlighting_gap():
+    regions = [
+        {"page": 5, "y": 0.2, "x": 0.1, "text": "Report immediately.", "precision": "word"},
+        {"page": 5, "y": 0.3, "x": 0.1, "text": "Unrelated details.", "precision": "word"},
+        {
+            "page": 5,
+            "y": 0.4,
+            "x": 0.1,
+            "text": "Contact security@example.com.",
+            "precision": "word",
+        },
+    ]
+    result = _quotes_provenance(
+        {"regions": regions, "pages": [5]}, ["Report immediately.", "Contact security@example.com."]
+    )
+    assert result["regions"] == [regions[0], regions[2]]
+    assert result["selection_status"] == "quote"
+    assert result["pages"] == [5]

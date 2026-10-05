@@ -1,5 +1,6 @@
 """Query decomposition: split a genuinely multi-part question into 2-4 focused
 sub-questions so each can be retrieved independently, then merged.
+An explicit follow-up instruction may add one extra bounded search.
 
 A single retrieval pass over a combined question ("how does X relate to Y")
 dilutes the ranking signal for either sub-topic -- neither X's nor Y's chunks
@@ -41,6 +42,24 @@ _MULTI_PART_RE = re.compile(
 )
 
 
+def listed_requests(question: str) -> list[str]:
+    """Extract explicit lists, retaining their shared subject and constraints."""
+    preamble, separator, body = question.partition(":")
+    if not separator:
+        return []
+    body, *followup = re.split(r"[.!?]\s+(?=[A-Z])", body, maxsplit=1)
+    # A second substantive instruction may introduce more subjects than the
+    # explicit list. Let the bounded model planner cover the entire question.
+    if followup and re.search(r"\b(also|additionally|why|compare)\b", followup[0], re.I):
+        return []
+    items = re.split(r"\n+|;\s*|,\s+(?:and\s+)?", body)
+    items = [re.sub(r"^(?:[-*•]|\d+[.)])\s*|^and\s+", "", s.strip()).strip(" ,;") for s in items]
+    items = [s for s in items if s]
+    if not 2 <= len(items) <= MAX_SUB_QUESTIONS:
+        return []
+    return [f"{preamble.strip()}: {item}" for item in items]
+
+
 def looks_multi_part(question: str) -> bool:
     """True if `question` shows a real surface signal of needing more than one
     independent search to answer well. This is a cheap pre-filter, not a
@@ -48,6 +67,10 @@ def looks_multi_part(question: str) -> bool:
     if not question:
         return False
     if question.count("?") >= 2:
+        return True
+    if listed_requests(question):
+        return True
+    if re.search(r"\b(for each|each of|which actions|which requirements)\b", question, re.I):
         return True
     return bool(_MULTI_PART_RE.search(question))
 
@@ -72,13 +95,24 @@ def decompose_question(gateway, model: str, question: str) -> list[str]:
     (either `looks_multi_part` was a false positive and the model agrees, or
     anything about the call failed) -- callers should treat [] as "retrieve
     this question normally, unchanged"."""
+    explicit = listed_requests(question)
+    if explicit:
+        return explicit
     messages = [
         {"role": "system", "content": QUERY_DECOMPOSITION_PROMPT},
         {"role": "user", "content": question},
     ]
     try:
         raw = gateway.chat(messages, model=model, temperature=0)
-        return _parse_response(raw)
+        subs = _parse_response(raw)
+        # Keep an explicit follow-up instruction searchable on its own. A
+        # planner may dilute exclusions by bundling each with approved methods.
+        followup = re.search(
+            r"\b(?:Also|Additionally)\s+(?:explain|describe|compare)\b.*", question, re.I | re.S
+        )
+        if subs and followup:
+            subs = [followup.group(0).strip(), *subs][: MAX_SUB_QUESTIONS + 1]
+        return subs
     except Exception as e:  # noqa: BLE001 - deliberately broad: never fail the query
         log.warning(
             "query decomposition failed, using single-pass retrieval",

@@ -50,6 +50,73 @@ def test_identical_attributes_from_different_subjects_are_not_deduplicated():
     assert packed[1]["source"]["section_path"] == "Person B"
 
 
+def test_unscoped_scenario_does_not_replace_policy_with_unrelated_tables(monkeypatch):
+    monkeypatch.setattr(query, "decompose_question", lambda *args: [])
+    policy = SearchHit(
+        "policy", 1, {"content": "Personal computers cannot access company applications."}
+    )
+    table = SearchHit(
+        "style",
+        0.1,
+        {"content": "| Token | Use |\n| --- | --- |\n| red | Error |\n| green | Success |"},
+    )
+
+    def collection(*args):
+        raise AssertionError("Per-device questions are not inventory requests")
+
+    container = SimpleNamespace(
+        settings=SimpleNamespace(chat_model="test"),
+        gateway=None,
+        reranker=None,
+        embedder=SimpleNamespace(embed_query=lambda _: [1.0]),
+        vectors=SimpleNamespace(
+            search=lambda *a, **k: [policy, table], collection_candidates=collection
+        ),
+    )
+    result = retrieve_chunks(
+        container,
+        "tenant",
+        "What business activities may they perform on each personal device?",
+        top_k=1,
+    )
+    assert result.chunk_ids == ["policy"]
+
+
+def test_focused_evidence_survives_whole_question_ranking(monkeypatch):
+    monkeypatch.setattr(query, "looks_multi_part", lambda _: True)
+    monkeypatch.setattr(query, "decompose_question", lambda *a: ["transport", "storage"])
+    passages = [
+        SearchHit("transport", 1, {"content": "transport requirements"}),
+        SearchHit("storage", 0.5, {"content": "storage requirements"}),
+        SearchHit("noise", 0.9, {"content": "general overview"}),
+    ]
+
+    def score(question, texts):
+        if question == "storage":
+            return [9 if "storage" in t else -10 for t in texts]
+        return [9 if "transport" in t else (8 if "overview" in t else -10) for t in texts]
+
+    container = SimpleNamespace(
+        settings=SimpleNamespace(
+            chat_model="test",
+            rerank_candidate_multiplier=2,
+            rerank_min_candidates=3,
+            rerank_min_score=0,
+        ),
+        gateway=None,
+        embedder=SimpleNamespace(embed_query=lambda _: [1.0]),
+        reranker=SimpleNamespace(score=score),
+        vectors=SimpleNamespace(search=lambda *a, **k: passages),
+    )
+    result = retrieve_chunks(container, "t", "compare transport with storage", top_k=2)
+    assert set(result.chunk_ids) == {"transport", "storage"}
+    # An explicit relevance floor is applied to the aspect channels as well.
+    empty = retrieve_chunks(
+        container, "t", "compare transport with storage", top_k=2, rerank_min_score=20
+    )
+    assert empty.chunk_ids == []
+
+
 def test_hybrid_fetches_beyond_final_cutoff_and_recovers_lexical_error(container, monkeypatch):
     query = [1.0] + [0.0] * (container.embedder.dim - 1)
     container.vectors.upsert([VectorPoint("a", "tenant", query, {"content": "alpha"})])

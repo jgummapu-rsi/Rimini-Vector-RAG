@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from time import perf_counter
@@ -89,6 +90,12 @@ class CitationProvenance(BaseModel):
     selection_status: str | None = None
 
 
+class CitationOccurrence(BaseModel):
+    occurrence: int = Field(ge=1)
+    supporting_quotes: list[str] = Field(default_factory=list, max_length=4)
+    provenance: CitationProvenance = Field(default_factory=CitationProvenance)
+
+
 class Citation(BaseModel):
     chunk_id: str
     document_id: str | None = None
@@ -105,6 +112,7 @@ class Citation(BaseModel):
     source_id: str | None = None
     evidence_origin: str | None = None
     supporting_quote: str | None = None
+    occurrences: list[CitationOccurrence] = Field(default_factory=list)
 
 
 class AnswerRequest(QueryRequest):
@@ -114,6 +122,7 @@ class AnswerRequest(QueryRequest):
     so a caller can take retrieval's chunks and bring their own LLM instead,
     or chain into this endpoint for generation with the same semantic answer
     cache `answer_query` always had."""
+
     contexts: list[str] = Field(max_length=50)
     chunk_ids: list[str] = Field(default_factory=list, max_length=50)
     scores: list[float] = Field(default_factory=list, max_length=50)
@@ -195,6 +204,18 @@ def ask(
     `/answer`."""
     model = _allowed_model(container, req.model)
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
+    log.info(
+        "ask scope",
+        extra={
+            "event": "ask_scope",
+            "question_hash": hashlib.sha256(req.question.encode()).hexdigest(),
+            "document_ids": req.document_ids,
+            "top_k": req.top_k,
+            "model": model,
+            "enforce_min_score": req.enforce_min_score,
+            "rerank_min_score": req.rerank_min_score,
+        },
+    )
     container.metrics.incr("ask.requests")
     t0 = perf_counter()
     result = answer_query(
@@ -220,6 +241,7 @@ def ask(
             "answer_status": result.answer_status,
             "evidence_origin": result.evidence_origin,
             "answer_len": len(result.answer),
+            "evidence_chunk_ids": result.chunk_ids,
             "duration_ms": round((perf_counter() - t0) * 1000, 1),
         },
     )

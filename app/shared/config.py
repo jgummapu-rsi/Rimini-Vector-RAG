@@ -97,8 +97,8 @@ class Settings(BaseSettings):
 
     litellm_base_url: str = ""
     litellm_api_key: str = ""
-    vision_model: str = "claude-sonnet-5"
-    chat_model: str = "gpt-5-nano"
+    vision_model: str = "gpt-6-sol"
+    chat_model: str = "gpt-6-sol"
     allowed_chat_models: list[str] = []
     request_global_concurrency: int = Field(default=32, ge=1)
     request_timeout_seconds: float = Field(default=90.0, gt=0, le=110, allow_inf_nan=False)

@@ -27,6 +27,21 @@ def test_collection_detection_and_schema_matching_are_domain_independent():
     )
 
 
+def test_scenario_each_does_not_trigger_inventory_or_generic_table_matches():
+    question = (
+        "A laptop stops working. What business activities may they perform on each personal device?"
+    )
+    assert not asks_for_collection(question)
+    for header in ["Token | Use", "You want | Run", "Trailer | Use when", "Weight | Permitted use"]:
+        table = f"| {header} |\n| --- | --- |\n| A | X |\n| B | Y |"
+        assert not matching_roster(question, table)
+        assert not matching_roster("List all activities they may use", table)
+    assert asks_for_collection("Name every supplier")
+    assert matching_roster(
+        "Name every supplier", "| Supplier | ID |\n| --- | --- |\n| A | 1 |\n| B | 2 |"
+    )
+
+
 def test_expansion_orders_heading_before_details_and_deduplicates_overlap():
     table1 = "| Product | ID |\n| --- | --- |\n| Alpha | 001 |\n| Beta | 002 |"
     table2 = "| Product | ID |\n| --- | --- |\n| Beta | 002 |\n| Gamma | 003 |"

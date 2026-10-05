@@ -86,7 +86,14 @@ class CrossEncoderReranker(Reranker):
             stride=min(64, self._max_length // 4),
         )
         tok.enable_padding()
-        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()
+        # Compose allocates two CPUs. Host-wide default thread pools cause
+        # oversubscription and throttling, especially during repeated reranks.
+        options.intra_op_num_threads = 2
+        options.inter_op_num_threads = 1
+        sess = ort.InferenceSession(
+            model_path, sess_options=options, providers=["CPUExecutionProvider"]
+        )
         return sess, tok, {i.name for i in sess.get_inputs()}
 
     def score(self, query: str, documents: list[str]) -> list[float]:

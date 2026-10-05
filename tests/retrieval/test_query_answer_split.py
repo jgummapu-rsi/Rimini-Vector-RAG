@@ -239,7 +239,19 @@ def test_answer_route_generates_from_supplied_contexts(client, container, tenant
     assert body["grounded"] is False
     assert body["evidence_origin"] == "supplied"
     assert body["citations"] == [
-        {"chunk_id": "c1", "filename": "x.txt", "source_id": "1", "evidence_origin": "supplied"}
+        {
+            "chunk_id": "c1",
+            "filename": "x.txt",
+            "source_id": "1",
+            "evidence_origin": "supplied",
+            "occurrences": [
+                {
+                    "occurrence": 1,
+                    "supporting_quotes": [],
+                    "provenance": {"regions": [], "selection_status": "missing_quote"},
+                }
+            ],
+        }
     ]
 
 

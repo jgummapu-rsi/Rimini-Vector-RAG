@@ -4,7 +4,7 @@ behavior, and end-to-end merging of independently-retrieved sub-questions."""
 import json
 
 from app.retrieval.rag.access import access_predicate
-from app.retrieval.rag.decompose import decompose_question, looks_multi_part
+from app.retrieval.rag.decompose import decompose_question, listed_requests, looks_multi_part
 from app.retrieval.rag.query import answer_query
 from app.shared.domain.models import Principal, Role
 from app.shared.ports.vector_store import VectorPoint
@@ -22,6 +22,41 @@ def test_looks_multi_part_false_for_single_focused_question():
     assert not looks_multi_part("What transaction shows update terminations after COMMIT WORK?")
     assert not looks_multi_part("")
     assert not looks_multi_part("Explain the pricing procedure determination process in detail.")
+
+
+def test_action_lists_preserve_shared_context_without_a_model_call():
+    gateway = _FakeGateway("must not be called")
+    for question in [
+        "A contractor wants to: export customer records, upload working files to personal storage, "
+        "and reuse equipment for another engagement. Which actions violate the policy?",
+        "A laboratory technician plans to:\n- freeze the test samples;\n"
+        "- transport them without refrigeration;\n- discard the unused reagents. Explain each requirement.",
+    ]:
+        assert looks_multi_part(question)
+        parts = decompose_question(gateway, "test", question)
+        assert len(parts) == 3
+        assert all(part.startswith(question.partition(":")[0]) for part in parts)
+    assert gateway.calls == 0
+
+
+def test_short_list_items_are_preserved_and_followups_use_full_planning():
+    assert (
+        len(
+            listed_requests(
+                "Compare: confidential email, large-file transfer, internal sharing, and external collaboration."
+            )
+        )
+        == 4
+    )
+    question = "Compare: air, sea, and rail. Also explain why trucks and drones are excluded."
+    assert listed_requests(question) == []
+    gateway = _FakeGateway(
+        '{"decompose":true,"sub_questions":["Compare air sea rail", "Explain trucks and drones"]}'
+    )
+    parts = decompose_question(gateway, "test", question)
+    assert len(parts) == 3
+    assert parts[0] == "Also explain why trucks and drones are excluded."
+    assert gateway.calls == 1
 
 
 class _FakeGateway:
@@ -167,7 +202,7 @@ def test_answer_query_merges_contexts_from_both_sub_questions(container):
         "How does PFCG role design use authorization objects?",
     ]
     assert calls["decompose"] == 1
-    assert calls["generate"] == 1
+    assert calls["generate"] == 2  # generation plus independent coverage review
     combined = " ".join(result.contexts)
     assert "condition records" in combined
     assert "authorization objects" in combined

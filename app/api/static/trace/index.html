@@ -628,11 +628,17 @@ td.num  { text-align: right; font-variant-numeric: tabular-nums; }
    bounding boxes. Extracted formats use the same plain-text treatment as the
    rest of this page; source HTML is never inserted into this document. */
 dialog.source-dialog {
-  width: min(1120px, calc(100vw - 40px)); height: min(860px, calc(100vh - 40px));
+  position: fixed; inset: 0 0 0 auto; margin: 0;
+  width: min(660px, 48vw); height: 100dvh; z-index: 100;
   max-width: none; max-height: none; padding: 0; overflow: hidden;
   border: 1px solid var(--gray-3); border-radius: var(--radius);
   background: var(--white); color: var(--rs-black); box-shadow: var(--shadow-lg);
 }
+.answer-citation { font: inherit; color: #765500; background: #fff1bb; border: 1px solid #c89200;
+  border-radius: 4px; padding: 0 4px; cursor: pointer; }
+.answer-citation:focus-visible { outline: 3px solid var(--rs-black); outline-offset: 2px; }
+body.citation-open #askdetail { margin-right: min(660px, 48vw); }
+@media (max-width: 1000px) { body.citation-open #askdetail { margin-right: 0; } }
 dialog.source-dialog::backdrop { background: rgba(22,22,22,.68); }
 .source-shell { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .source-head { display: flex; align-items: flex-start; gap: 18px; padding: 18px 20px;
@@ -942,11 +948,12 @@ body.modal-open { overflow: hidden; }
         <p class="meta" id="sourceMeta"></p>
       </div>
       <div class="source-actions">
-        <a class="btn btn-sm" id="sourceDownload" href="#" download>Download original</a>
+        <a class="btn btn-sm" id="sourceDownload" href="#" download hidden>Download original</a>
         <button class="btn btn-sm" id="sourceClose" type="button">Close</button>
       </div>
     </div>
     <div class="source-body" id="sourceBody" tabindex="0" role="region" aria-label="Original source preview"></div>
+    <blockquote class="inline-quote" id="sourceQuote" hidden></blockquote>
   </div>
 </dialog>
 
@@ -1137,7 +1144,7 @@ function navigate(page, opts = {}) {
   if (page === "team" && !workspace?.manage_team) page = "ingest";
   if (!opts.silent && location.hash !== "#/" + page) location.hash = "#/" + page;
   const isIngest = page === "ingest";
-  if (page !== "ask") inlineSourceCleanup();
+  if (page !== "ask") closeSource();
   $("docsLayout").hidden = !isIngest;
   $("askLayout").hidden = page !== "ask";
   $("teamLayout").hidden = page !== "team";
@@ -1791,13 +1798,17 @@ function clearSourceURL() {
 }
 
 function closeSource() {
+  inlineSourceCleanup();
   sourceOpenToken += 1;
   clearSourceURL();
   const dialog = $("sourceDialog");
   if (dialog.open) dialog.close();
   $("sourceBody").replaceChildren();
   $("sourceDownload").removeAttribute("href");
+  $("sourceDownload").hidden = true;
   document.body.classList.remove("modal-open");
+  document.body.classList.remove("citation-open");
+  $("sourceQuote").hidden = true;
   if (sourceReturnFocus && document.contains(sourceReturnFocus)) sourceReturnFocus.focus();
   sourceReturnFocus = null;
 }
@@ -1966,22 +1977,48 @@ function renderNativeSource(source, kind, openToken) {
 async function openSource(source, opener) {
   if (!source || !source.document_id) return;
   const openToken = ++sourceOpenToken;
+  inlineSourceCleanup();
   sourceReturnFocus = opener || document.activeElement;
   clearSourceURL();
   const dialog = $("sourceDialog");
   $("sourceTitle").textContent = source.filename || source.document_id;
   $("sourceMeta").textContent = [source.source_type, source.version != null ? `Version ${source.version}` : "", source.location]
     .filter(Boolean).join(" | ");
+  if (source.citation_notice) $("sourceMeta").textContent += " | " + source.citation_notice;
   $("sourceDownload").removeAttribute("href");
+  $("sourceDownload").hidden = true;
+  $("sourceDownload").onclick = null;
   $("sourceDownload").setAttribute("aria-disabled", "true");
   const loading = document.createElement("div");
   loading.className = "source-loading";
   loading.innerHTML = '<span><span class="btnspin" aria-hidden="true"></span>Loading source…</span>';
   $("sourceBody").replaceChildren(loading);
-  if (!dialog.open) dialog.showModal();
-  document.body.classList.add("modal-open");
+  if (!dialog.open) dialog.show();
+  document.body.classList.add("citation-open");
+  $("sourceQuote").hidden = !source.supporting_quote;
+  $("sourceQuote").textContent = source.supporting_quote || "";
   $("sourceClose").focus();
 
+  // Versioned citations load just the cited pages, not the entire document.
+  if (Number.isInteger(source.version) && source.version > 0) {
+    const download = $("sourceDownload");
+    download.hidden = false;
+    download.removeAttribute("aria-disabled");
+    download.onclick = async event => {
+      if (download.hasAttribute("href")) return;
+      event.preventDefault();
+      try {
+        const file = await api(sourcePath(source), {responseType: "blob"});
+        if (openToken !== sourceOpenToken) return;
+        sourceObjectURL = URL.createObjectURL(file);
+        download.href = sourceObjectURL;
+        download.download = source.filename || "source";
+        download.click();
+      } catch (error) { if (openToken === sourceOpenToken) toast("Download failed: " + error.message); }
+    };
+    await renderInlineSource($("sourceBody"), source);
+    return;
+  }
   let blob;
   try {
     blob = await api(sourcePath(source), { responseType: "blob" });
@@ -1993,6 +2030,8 @@ async function openSource(source, opener) {
   if (openToken !== sourceOpenToken) return;
   sourceObjectURL = URL.createObjectURL(blob);
   const download = $("sourceDownload");
+  download.hidden = false;
+  download.onclick = null;
   download.href = sourceObjectURL;
   download.download = source.filename || `document-${source.document_id}`;
   download.removeAttribute("aria-disabled");
@@ -2014,6 +2053,9 @@ async function openSource(source, opener) {
 }
 
 $("sourceClose").onclick = closeSource;
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && $("sourceDialog").open) { event.preventDefault(); closeSource(); }
+});
 $("sourceDialog").addEventListener("cancel", (event) => { event.preventDefault(); closeSource(); });
 $("sourceDialog").addEventListener("click", (event) => {
   if (event.target === $("sourceDialog")) closeSource();
@@ -2190,14 +2232,17 @@ function passageOverlay(regions, page, approximate) {
 function renderSourceText(text, quote) {
   const pre = document.createElement("pre");
   pre.className = "source-text";
-  const match = uniqueQuoteRange(text, quote);
-  if (match) {
-    const [start, end] = match;
-    pre.append(document.createTextNode(text.slice(0, start)));
+  const ranges = (Array.isArray(quote) ? quote : [quote]).map(q => uniqueQuoteRange(text, q))
+    .filter(Boolean).sort((a, b) => a[0] - b[0]);
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start < cursor) continue;
+    pre.append(document.createTextNode(text.slice(cursor, start)));
     const mark = document.createElement("mark");
     mark.className = "source-selection"; mark.textContent = text.slice(start, end);
-    pre.append(mark, document.createTextNode(text.slice(end)));
-  } else pre.textContent = text;
+    pre.append(mark); cursor = end;
+  }
+  pre.append(document.createTextNode(text.slice(cursor)));
   return pre;
 }
 
@@ -2238,20 +2283,22 @@ function renderStructuredSource(preview, source) {
     const loc = block.locator || {};
     const card = document.createElement("section"); card.className = "source-chunk";
     const sameItem = locator.body_index != null && loc.body_index === locator.body_index;
-    const quoted = uniqueQuoteRange(block.text, source.supporting_quote || source.snippet);
+    const quotes = source.supporting_quotes || [source.supporting_quote || source.snippet];
+    const quoted = quotes.some(q => uniqueQuoteRange(block.text, q));
     if (sameItem || quoted || (locator.sheet === loc.sheet && locator.row != null && locator.row === loc.row)) {
       card.classList.add("cited"); card.dataset.selected = "true";
     }
     const label = document.createElement("p"); label.className = "meta";
     label.textContent = loc.sheet ? `${loc.sheet} · Row ${loc.row}`
       : loc.body_index ? `Document item ${loc.body_index}` : `Row ${loc.row}`;
-    card.append(label, renderSourceText(block.text, source.supporting_quote || source.snippet)); wrapper.append(card);
+    card.append(label, renderSourceText(block.text, quotes)); wrapper.append(card);
   }
   return wrapper;
 }
 
 function renderLocatedText(preview, source) {
   const text = preview.text || "Empty document";
+  if (source.supporting_quotes) return renderSourceText(text, source.supporting_quotes);
   for (const quote of [source.supporting_quote, source.snippet]) {
     if (uniqueQuoteRange(text, quote)) return renderSourceText(text, quote);
   }
@@ -2312,7 +2359,10 @@ async function renderInlineSource(host, source) {
           frame.append(image, passageOverlay(provenance.regions || [], page, provenance.selection_status !== "quote"));
           pageHost.replaceChildren(frame);
         } catch (error) {
-          if (live() && sequence === load) pageHost.textContent = "Page preview unavailable. Use Expand source to retry.";
+          if (live() && sequence === load) {
+            pageHost.replaceChildren(document.createTextNode("Page preview unavailable. Showing cited text. "),
+              renderSourceText(source.snippet || "", source.supporting_quote));
+          }
         }
       };
       for (const page of pages) {
@@ -2334,7 +2384,7 @@ async function renderInlineSource(host, source) {
         : renderLocatedText(preview, source);
       host.replaceChildren(pre);
       explainHighlight(host, source);
-      if (preview.truncated || preview.blocks_truncated) host.append(document.createTextNode("Preview truncated. Expand source to download the original."));
+      if (preview.truncated || preview.blocks_truncated) host.append(document.createTextNode("Preview truncated. Download the original for full content."));
       requestAnimationFrame(() => {
         if (!live()) return;
         const mark = pre.querySelector("mark, [data-selected]");
@@ -2350,8 +2400,34 @@ async function renderInlineSource(host, source) {
   }
 }
 
+function answerWithCitations(answer, citations) {
+  const byId = new Map(citations.map((c, i) => [String(c.source_id || i + 1), i]));
+  const counts = new Map();
+  const parts = String(answer || "").split(/(\[\d+\])/g);
+  return parts.map(part => {
+    const id = part.slice(1, -1), index = byId.get(id);
+    if (/^\[\d+\]$/.test(part) && index !== undefined) counts.set(id, (counts.get(id) || 0) + 1);
+    return /^\[\d+\]$/.test(part) && index !== undefined
+      ? `<button type="button" class="answer-citation" data-citation="${index}" data-occurrence="${counts.get(id)}" aria-controls="sourceDialog" aria-label="Open citation ${esc(id)}, occurrence ${counts.get(id)}">${esc(part)}</button>`
+      : esc(part);
+  }).join("");
+}
+
+function citationForOccurrence(citation, occurrence) {
+  if (!occurrence) return citation;
+  const match = (citation.occurrences || []).find(item => item.occurrence === occurrence);
+  if (!match) return {...citation, supporting_quote: "", supporting_quotes: [],
+    provenance: {...(citation.provenance || {}), regions: [], selection_status: "missing_quote"},
+    citation_notice: "Claim-specific highlight unavailable for this saved answer. Ask again to refresh citations."};
+  const quotes = match.supporting_quotes || [];
+  return {...citation, provenance: match.provenance, supporting_quotes: quotes,
+    supporting_quote: quotes.join("\n\n…\n\n"),
+    citation_notice: quotes.length ? `Evidence for citation ${citation.source_id}, occurrence ${occurrence}`
+      : "No verified highlight for this claim; showing the source for inspection."};
+}
+
 function renderAskDetail(entry) {
-  inlineSourceCleanup();
+  closeSource();
   const host = $("askdetail");
   if (!entry) {
     if (pendingQuestion) {
@@ -2419,14 +2495,7 @@ function renderAskDetail(entry) {
     <p class="eyebrow answer-identity">Agentic AI · Knowledge assistant</p>
     <div class="answer-tools"><button class="btn btn-sm" id="answerTrace" type="button">View answer trace</button></div>
     ${bannerHTML}
-    <div class="answercard">${esc(entry.answer)}</div>
-    ${hasCitations ? `<section class="inline-source" aria-label="Cited source preview">
-      <header><div class="grow"><h3>Source preview</h3><p class="meta" id="inlineSourceMeta"></p></div>
-      <select id="inlineSourceChoice" aria-label="Choose cited source">${citations.map((c, i) =>
-        `<option value="${i}">[${esc(c.source_id || i + 1)}] ${esc(c.filename || "Source")}</option>`).join("")}</select>
-      <button class="btn btn-sm" id="inlineSourceExpand" type="button">Expand source</button></header>
-      <div class="inline-preview" id="inlineSourceBody" aria-busy="true"></div>
-      <blockquote class="inline-quote" id="inlineSourceQuote" hidden></blockquote></section>` : ""}
+    <div class="answercard">${answerWithCitations(entry.answer, hasCitations ? citations : [])}</div>
     ${subq}
     ${citesHTML}
   `;
@@ -2436,40 +2505,11 @@ function renderAskDetail(entry) {
     $("traceBody").innerHTML = stagesHTML || '<p class="meta">No trace steps were recorded for this answer.</p>';
   };
 
-  if (hasCitations) {
-    const previewHost = $("inlineSourceBody");
-    const select = $("inlineSourceChoice");
-    const show = async () => {
-      const source = citations[Number(select.value)];
-      $("inlineSourceMeta").textContent = [source.location, source.version ? `Version ${source.version}` : "",
-        source.source_type === "pdf" ? ({quote: "Exact quoted words highlighted", region: "Approximate source region",
-          missing_quote: "Source page — no verified quote supplied", unmapped_quote: "Quote shown below — exact position unavailable"}[source.provenance?.selection_status] || "Source page preview") : "Source content preview"].filter(Boolean).join(" · ");
-      const quote = $("inlineSourceQuote"); quote.hidden = !source.supporting_quote;
-      quote.textContent = source.supporting_quote || "";
-      $("inlineSourceExpand").onclick = event => openSource(source, event.currentTarget);
-      previewHost.setAttribute("aria-busy", "true");
-      await renderInlineSource(previewHost, source);
-      if (previewHost.isConnected) previewHost.setAttribute("aria-busy", "false");
-    };
-    select.onchange = show;
-    show();
-  }
-
-  host.querySelectorAll(".citation .open-source").forEach((el) => {
+  host.querySelectorAll(".answer-citation, .citation .open-source").forEach((el) => {
     el.onclick = (event) => {
       const citation = citations[Number(el.dataset.citation)];
       if (!citation) return;
-      openSource({
-        document_id: citation.document_id,
-        version: citation.version,
-        source_type: citation.source_type,
-        provenance: citation.provenance || citation.meta || {},
-        location: citation.location,
-        chunk_id: citation.chunk_id,
-        snippet: citation.snippet,
-        supporting_quote: citation.supporting_quote,
-        filename: citation.filename,
-      }, event.currentTarget);
+      openSource(citationForOccurrence(citation, Number(el.dataset.occurrence)), event.currentTarget);
     };
   });
   host.querySelectorAll(".citation .jump").forEach((el) => {
