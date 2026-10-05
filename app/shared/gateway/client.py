@@ -315,6 +315,8 @@ class LiteLLMClient:
         }
         if self.vision_model.startswith(("gpt-5.5", "gpt-5.6", "gpt-6")):
             payload.pop("temperature", None)
+        if self.vision_model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
         async with asyncio.timeout(timeout_seconds):
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 async with client.stream(

@@ -41,6 +41,7 @@ _OK = {"choices": [{"message": {"content": "hello"}}]}
         ("gpt-5.5", False),
         ("gpt-5.6-sol", False),
         ("gpt-6-astra", False),
+        ("gpt-6-sol", False),
         ("other-model", True),
     ],
 )
@@ -68,6 +69,9 @@ def test_gateway_alias_temperature_compatibility(monkeypatch, model, temperature
     )
     assert len(payloads) == 3
     assert all(("temperature" in payload) == temperature_supported for payload in payloads)
+    budget_key = "max_completion_tokens" if model.startswith(("gpt-5", "gpt-6")) else "max_tokens"
+    assert payloads[-1][budget_key] == 32
+    assert ("max_tokens" in payloads[-1]) != ("max_completion_tokens" in payloads[-1])
 
 
 @pytest.fixture
