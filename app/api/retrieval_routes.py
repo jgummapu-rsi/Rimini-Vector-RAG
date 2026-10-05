@@ -60,6 +60,7 @@ class AskRequest(QueryRequest):
     model: str | None = Field(default=None, max_length=128)
     use_cache: bool | None = None
     allow_general_answer: bool = True
+    system_prompt: str | None = Field(default=None, max_length=4096)
 
 
 class BoundingRegion(BaseModel):
@@ -113,7 +114,6 @@ class AnswerRequest(QueryRequest):
     so a caller can take retrieval's chunks and bring their own LLM instead,
     or chain into this endpoint for generation with the same semantic answer
     cache `answer_query` always had."""
-
     contexts: list[str] = Field(max_length=50)
     chunk_ids: list[str] = Field(default_factory=list, max_length=50)
     scores: list[float] = Field(default_factory=list, max_length=50)
@@ -127,6 +127,8 @@ class AnswerRequest(QueryRequest):
         if sum(len(value.encode()) for value in values) > 256000:
             raise ValueError("Supplied contexts exceed the byte budget")
         return values
+
+    system_prompt: str | None = Field(default=None, max_length=4096)
 
 
 def _allowed_model(container: Container, requested: str | None) -> str:
@@ -207,6 +209,7 @@ def ask(
         rerank_min_score=req.rerank_min_score,
         use_cache_override=req.use_cache,
         allow_general_answer=req.allow_general_answer,
+        response_instruction=req.system_prompt,
     )
     log.info(
         "ask answered",
@@ -263,6 +266,8 @@ def answer(
         ],
         req.sub_questions,
         model=model,
+        response_instruction=req.system_prompt,
+        cache_allowed=req.system_prompt is None,
     )
     log.info(
         "answer generated",

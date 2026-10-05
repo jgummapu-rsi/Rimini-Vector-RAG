@@ -22,12 +22,15 @@ GENERAL_SYSTEM = (
 )
 
 
-def general_answer(container, question, model, fallback):
+def general_answer(container, question, model, fallback, response_instruction=None):
     """Use only the question, never retrieved passages or failed model output."""
 
+    system_prompt = GENERAL_SYSTEM
+    if response_instruction:
+        system_prompt += f"\n\nResponse-style requirements:\n{response_instruction}"
     raw = container.gateway.chat(
         [
-            {"role": "system", "content": GENERAL_SYSTEM},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": question},
         ],
         model=model,
