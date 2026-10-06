@@ -198,7 +198,9 @@ def extract_bounded(
     ).hexdigest()
     prior = load_artifact(result_key)
     if prior is not None:
-        summary = dict(prior["summary"], extraction_reused=True, vision_calls=0)
+        summary = dict(
+            prior["summary"], extraction_reused=True, vision_calls=0, vision_completion_tokens=0
+        )
         return [Element(**element) for element in prior["elements"]], summary
     multiprocessing.set_forkserver_preload(["app.ingest.pipeline.loaders"])
     context = multiprocessing.get_context("forkserver")
@@ -233,6 +235,7 @@ def extract_bounded(
     native_deadline = started + cfg.parse_timeout_seconds
     calls = 0
     reused = 0
+    completion_tokens = 0
     try:
         while True:
             if check_lease is not None:
@@ -256,7 +259,11 @@ def extract_bounded(
             if kind == "result":
                 elements = [Element(**element) for element in message["elements"]]
                 summary = message["summary"]
-                summary.update(vision_calls=calls - reused, vision_reused=reused)
+                summary.update(
+                    vision_calls=calls - reused,
+                    vision_reused=reused,
+                    vision_completion_tokens=completion_tokens,
+                )
                 save_artifact(result_key, {"elements": message["elements"], "summary": summary})
                 return elements, summary
             if kind == "layout" and profile["enabled"]:
@@ -293,14 +300,22 @@ def extract_bounded(
             ).hexdigest()
             calls += 1
             if calls > cfg.max_vision_calls:
-                raise UnsafeContentError("Extraction exceeded the vision request budget")
+                raise UnsafeContentError(
+                    f"Extraction exceeded the vision call limit ({cfg.max_vision_calls})"
+                )
             cached = load_artifact(key)
             if cached is not None:
                 text = cached["text"]
                 reused += 1
             else:
-                if (calls - 1) * cfg.vision_max_tokens >= cfg.max_vision_tokens:
-                    raise UnsafeContentError("Extraction exceeded the vision request budget")
+                remaining_tokens = cfg.max_vision_tokens - completion_tokens
+                if remaining_tokens <= 0:
+                    raise UnsafeContentError(
+                        "Extraction exhausted the vision completion-token budget "
+                        f"({completion_tokens}/{cfg.max_vision_tokens}; "
+                        f"{calls - reused - 1} fresh calls, {reused} reused)"
+                    )
+                request_tokens = min(cfg.vision_max_tokens, remaining_tokens)
                 text = asyncio.run(
                     _vision_with_lease(
                         gateway,
@@ -308,14 +323,25 @@ def extract_bounded(
                         message["prompt"],
                         message["mime"],
                         cfg.vision_timeout_seconds,
-                        min(
-                            cfg.vision_max_tokens,
-                            cfg.max_vision_tokens - (calls - 1) * cfg.vision_max_tokens,
-                        ),
+                        request_tokens,
                         check_lease,
                     )
                 )
-                save_artifact(key, {"text": text})
+                used = getattr(text, "completion_tokens", request_tokens)
+                if type(used) is not int or not 0 <= used <= request_tokens:
+                    raise UnsafeContentError("Invalid vision completion-token accounting")
+                completion_tokens += used
+                save_artifact(key, {"text": str(text), "completion_tokens": used})
+                log.info(
+                    "Vision extraction progress",
+                    extra={
+                        "event": "vision_progress",
+                        "vision_calls": calls - reused,
+                        "vision_reused": reused,
+                        "vision_completion_tokens": completion_tokens,
+                        "vision_token_budget": cfg.max_vision_tokens,
+                    },
+                )
             native_deadline += time.monotonic() - pause_started
             _send(parent, {"kind": "vision_result", "text": text}, native_deadline)
     finally:

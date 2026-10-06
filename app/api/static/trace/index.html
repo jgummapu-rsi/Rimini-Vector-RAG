@@ -890,6 +890,10 @@ body.modal-open { overflow: hidden; }
           <div class="composer-controls">
           <details class="advanced">
             <summary>Answer preferences</summary>
+            <label for="askmodel">Answer model</label>
+            <select id="askmodel"><option value="">Workspace default</option></select>
+            <p id="embeddingModelLabel" class="meta"></p>
+            <p id="chatModelStatus" class="meta" role="status"></p>
             <label for="asktopk">Sources to consider</label>
             <input id="asktopk" type="number" min="1" max="50" value="10">
           </details>
@@ -1236,6 +1240,17 @@ async function enterApp() {
   $("globalScope").hidden = !workspace.publish_global;
   $("scope").value = "tenant";
   $("visibility").value = "private";
+  $("askmodel").replaceChildren(new Option(workspace.chat_model || "Workspace default", ""));
+  $("embeddingModelLabel").textContent = `Workspace embeddings: ${workspace.embedding_model || "Default"}`;
+  $("chatModelStatus").textContent = "Loading available answer models…";
+  api("/onboarding/models").then(options => {
+    if (epoch !== accountEpoch) return;
+    $("askmodel").replaceChildren(...options.chat_models.map(item => new Option(item.label, item.id)));
+    if (options.chat_models.some(item => item.id === workspace.chat_model)) $("askmodel").value = workspace.chat_model;
+    $("chatModelStatus").textContent = "";
+  }).catch(() => {
+    if (epoch === accountEpoch) $("chatModelStatus").textContent = "Model list unavailable; using workspace default.";
+  });
   $("documentSearch").value = "";
   teamOffset = 0;
   if (!$("detail").children.length) $("detail").innerHTML = libraryWelcomeHTML;
@@ -1919,7 +1934,7 @@ async function renderPdfSource(source, openToken) {
     image.onload = () => URL.revokeObjectURL(pageURL);
     image.src = pageURL;
     frame.append(image);
-    frame.append(passageOverlay(regions, page, provenance.selection_status !== "quote"));
+    frame.append(passageOverlay(regions, page, provenance.selection_status !== "quote", provenance.chunk_regions || []));
     pageHost.className = "";
     pageHost.replaceChildren(frame);
   }
@@ -2141,9 +2156,8 @@ function renderAskHistList() {
   }
   host.innerHTML = askHistory.map((e, i) => {
     const tag = askTag(e);
-    return `<div class="doc${i === askSelected ? " sel" : ""}" role="button" tabindex="0" data-idx="${i}">
+    return `<div class="doc${i === askSelected ? " sel" : ""}" role="button" tabindex="0" data-idx="${i}" aria-current="${i === askSelected ? "true" : "false"}" aria-label="${esc(e.question)} — ${esc(tag.text)}">
       <span class="nm" title="${esc(e.question)}">${esc(e.question)}</span>
-      <span class="asktag ${tag.cls}">${esc(tag.text)}</span>
     </div>`;
   }).join("");
   host.querySelectorAll(".doc").forEach((el) => {
@@ -2210,13 +2224,25 @@ function passageGroups(regions, page) {
   });
 }
 
-function passageOverlay(regions, page, approximate) {
+function passageOverlay(regions, page, approximate, chunkRegions = []) {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 1000 1000");
   svg.setAttribute("preserveAspectRatio", "none");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("class", "passage-overlay" + (approximate ? " approximate" : ""));
+  for (const r of passageGroups(chunkRegions, page)) {
+    const rect = document.createElementNS(ns, "rect");
+    const x = Math.max(0, r.x * 1000 - 4), y = Math.max(0, r.y * 1000 - 4);
+    rect.setAttribute("class", "chunk-outline");
+    rect.setAttribute("x", x); rect.setAttribute("y", y);
+    rect.setAttribute("width", Math.min(1000 - x, (r.x + r.width) * 1000 + 4 - x));
+    rect.setAttribute("height", Math.min(1000 - y, (r.y + r.height) * 1000 + 4 - y));
+    rect.setAttribute("rx", "5");
+    const title = document.createElementNS(ns, "title");
+    title.textContent = "Full source chunk (quoted text highlighted inside)";
+    rect.append(title); svg.append(rect);
+  }
   for (const r of passageGroups(regions, page)) {
     const rect = document.createElementNS(ns, "rect");
     if (r.approximate) rect.setAttribute("class", "approximate");
@@ -2356,7 +2382,7 @@ async function renderInlineSource(host, source) {
             if (first) host.scrollTop = Math.max(0, frame.offsetTop - host.offsetTop + image.clientHeight * first.y - 60);
           };
           image.src = objectURL(blob);
-          frame.append(image, passageOverlay(provenance.regions || [], page, provenance.selection_status !== "quote"));
+          frame.append(image, passageOverlay(provenance.regions || [], page, provenance.selection_status !== "quote", provenance.chunk_regions || []));
           pageHost.replaceChildren(frame);
         } catch (error) {
           if (live() && sequence === load) {
@@ -2559,7 +2585,7 @@ async function askQuestion() {
     const result = await api("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, top_k: topK }),
+      body: JSON.stringify({ question, top_k: topK, model: $("askmodel").value || undefined }),
     });
     if (epoch !== accountEpoch) return;
     pendingQuestion = "";

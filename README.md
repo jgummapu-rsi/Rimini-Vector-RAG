@@ -192,6 +192,43 @@ the raw API token. `document_ids` can restrict a query to selected accessible fi
 
 ## Configuration
 
+### Workspace model choices
+
+During **Create workspace**, choose a default answer model and a workspace embedding
+model. The server discovers choices from the configured LiteLLM `/model/info`
+endpoint; the API key stays server-side. Claude/Anthropic models and image-generation
+or Responses-only deployments are excluded from the answer selector. Team members
+can choose another available answer model under **Answer preferences** for each question.
+
+Supported gateway embedding choices are `text-embedding-3-small`,
+`text-embedding-3-large`, and `text-embedding-ada-002`, when advertised by the gateway.
+They use 1,536 dimensions (the large model requests reduced-dimensional output).
+Local CPU choices are **MiniLM L6 v2** and **BGE Small English v1.5**, both 384-dimensional
+ONNX models with pinned revisions. Merely opening the dropdown downloads neither
+local model. Creating a workspace with a local choice starts its background load;
+the worker also loads it on demand when processing that workspace. Downloads are
+cached on disk and loaded sessions are reused per process. A request made while a
+model is loading returns a retryable loading message.
+
+The embedding choice is fixed at workspace creation and inherited by its members.
+Ingestion and queries use the same model, tokenizer, and profile. Additional profiles
+use separate vector storage and profile-specific answer caches; existing workspaces
+keep the deployment's original index. Global documents are searchable within their
+compatible embedding space, not compared across different models. Changing an
+existing workspace's embedding space or copying global documents into other spaces
+requires explicit reindexing and is not a signup setting.
+
+API clients can discover choices with `GET /onboarding/models`, then send
+`chat_model` and `embedding_model` to `POST /onboarding/register`. Authenticated
+`GET /onboarding/me` reports the workspace choices. `POST /ask` and `POST /answer`
+accept an optional `model` override. Existing clients omitting signup model fields
+retain the deployment defaults.
+
+For an existing production database, run the normal privileged database initialization
+and runtime-grant procedure before deploying: this feature adds `workspace_models`,
+`workspace_embedding_profiles`, `workspace_vector_chunks`, and a retrieval view.
+Development startup creates these structures automatically.
+
 [`.env.example`](.env.example) is the starting template;
 [`app/shared/config.py`](app/shared/config.py) defines all application settings.
 Host-run Python reads environment variables and `.env`. Compose forwards the

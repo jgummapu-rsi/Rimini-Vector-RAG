@@ -43,7 +43,15 @@ def ensure_profile(cur, profile: EmbeddingProfile) -> None:
         raise ValueError("Embedding profile mismatch; migrate using a shadow index")
 
 
-def check_profile(cur, profile_id: str) -> None:
+def check_profile(cur, profile_id: str, workspace: bool = False) -> None:
+    if workspace:
+        cur.execute(
+            "SELECT profile_id FROM workspace_embedding_profiles WHERE profile_id=%s",
+            (profile_id,),
+        )
+        if cur.fetchone() is None:
+            raise ValueError("Workspace embedding profile is not registered")
+        return
     cur.execute("SELECT profile_id FROM embedding_profile WHERE singleton=true FOR SHARE")
     row = cur.fetchone()
     if row is None or row["profile_id"] != profile_id:

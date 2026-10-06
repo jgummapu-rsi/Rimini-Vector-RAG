@@ -250,14 +250,14 @@ label.lbl {
   display: block; font-size: 12px; font-weight: 600; text-transform: uppercase;
   letter-spacing: var(--track-eyebrow); color: var(--gray-7); margin: 20px 0 7px;
 }
-input {
+input, select {
   width: 100%; font: inherit; font-size: 16px; padding: 11px 13px;
   border-radius: var(--radius); border: 1.5px solid var(--gray-6);
   background: var(--white); color: var(--rs-black);
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
 input::placeholder { color: var(--gray-6); }
-input:focus {
+input:focus, select:focus {
   outline: none; border-color: var(--rs-black);
   box-shadow: 0 0 0 3px var(--yellow-3);      /* §2.2 — yellow-3 is the focus glow */
 }
@@ -440,6 +440,14 @@ function screenAuth() {
       ${mode === "register" ? `
         <label class="lbl" for="dname">Organization name (optional)</label>
         <input id="dname" placeholder="Meridian Health Systems">
+        <label class="lbl" for="signupChatModel">Default answer model</label>
+        <select id="signupChatModel" disabled><option>Loading gateway models…</option></select>
+        <label class="lbl" for="signupEmbeddingModel">Workspace embedding model</label>
+        <select id="signupEmbeddingModel" disabled><option>Loading embedding models…</option></select>
+        <p class="sub">Your team shares this embedding model for indexing and searching documents.
+          This choice is fixed for the workspace. Local CPU models download only after you select
+          one and create the workspace; first use may take a little longer.</p>
+        <p id="modelOptionsStatus" role="status"></p>
       ` : ``}
       <label class="lbl" for="email">Email</label>
       <input id="email" type="email" placeholder="dana.reyes@meridianhealth.com" autocomplete="username">
@@ -457,11 +465,35 @@ function screenAuth() {
     $("tabLogin").onclick = () => { mode = "login"; draw(); };
     $("back").onclick = () => screenWelcome();
     $("submit").onclick = () => submit();
+    if (mode === "register") loadSignupModels();
     ["email", "password"].forEach((id) =>
       $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); }));
   }
 
+  async function loadSignupModels() {
+    const chat = $("signupChatModel"), embedding = $("signupEmbeddingModel");
+    $("submit").disabled = true;
+    try {
+      const options = await api("/onboarding/models");
+      if (!chat.isConnected) return;
+      for (const [select, items, selected] of [
+        [chat, options.chat_models, options.default_chat_model],
+        [embedding, options.embedding_models, options.default_embedding_model],
+      ]) {
+        select.replaceChildren(...items.map(item => new Option(item.label, item.id)));
+        if (items.some(item => item.id === selected)) select.value = selected;
+        select.disabled = !items.length;
+      }
+      $("submit").disabled = chat.disabled || embedding.disabled;
+      $("modelOptionsStatus").textContent = chat.disabled || embedding.disabled
+        ? "No compatible gateway models are available. Please contact your administrator." : "";
+    } catch (error) {
+      if (chat.isConnected) $("modelOptionsStatus").textContent = error.message + " Switch tabs to retry.";
+    }
+  }
+
   async function submit() {
+    if ($("submit").disabled) return;
     const email = $("email").value.trim();
     const password = $("password").value;
     const btn = $("submit"), err = $("err");
@@ -477,7 +509,8 @@ function screenAuth() {
       if (mode === "register") {
         const display_name = $("dname").value.trim() || undefined;
         const out = await api("/onboarding/register", {
-          method: "POST", body: JSON.stringify({ email, password, display_name }),
+          method: "POST", body: JSON.stringify({ email, password, display_name,
+            chat_model: $("signupChatModel").value, embedding_model: $("signupEmbeddingModel").value }),
         });
         apiToken = out.api_token;
       } else {

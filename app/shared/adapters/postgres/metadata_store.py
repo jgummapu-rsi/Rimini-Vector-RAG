@@ -137,6 +137,52 @@ class PostgresMetadataStore(MetadataStore):
             cur.execute("INSERT INTO tenants (id, name) VALUES (%s, %s)", (tid, name))
         return tid
 
+    def get_workspace_models(self, tenant_id: str) -> dict | None:
+        with transaction(self.dsn) as cur:
+            cur.execute(
+                "SELECT chat_model,embedding_model FROM workspace_models WHERE tenant_id=%s",
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def create_workspace_with_models(
+        self,
+        name: str,
+        email: str,
+        token: str,
+        password_hash: str,
+        chat_model: str,
+        embedding_model: str,
+    ) -> tuple[str, str]:
+        tenant_id, user_id = new_object_id(), new_object_id()
+        try:
+            with transaction(self.dsn) as cur:
+                cur.execute("INSERT INTO tenants(id,name) VALUES(%s,%s)", (tenant_id, name))
+                cur.execute(
+                    "INSERT INTO users(id,tenant_id,email,role,api_token,password_hash) "
+                    "VALUES(%s,%s,%s,'admin',%s,%s)",
+                    (user_id, tenant_id, email, hash_token(token), password_hash),
+                )
+                cur.execute(
+                    "INSERT INTO workspace_models(tenant_id,chat_model,embedding_model) VALUES(%s,%s,%s)",
+                    (tenant_id, chat_model, embedding_model),
+                )
+        except psycopg2.errors.UniqueViolation as exc:
+            if exc.diag.constraint_name == "idx_users_email_password_unique":
+                raise EmailAlreadyRegistered(email) from exc
+            raise
+        return tenant_id, user_id
+
+    def set_workspace_models(self, tenant_id: str, chat_model: str, embedding_model: str) -> None:
+        # Immutable after signup: existing document vectors must never silently
+        # switch spaces when an account logs in or another member joins.
+        with transaction(self.dsn) as cur:
+            cur.execute(
+                "INSERT INTO workspace_models(tenant_id,chat_model,embedding_model) VALUES (%s,%s,%s)",
+                (tenant_id, chat_model, embedding_model),
+            )
+
     def get_workspace_identity(self, principal: Principal) -> dict[str, Any]:
         with transaction(self.dsn) as cur:
             cur.execute(

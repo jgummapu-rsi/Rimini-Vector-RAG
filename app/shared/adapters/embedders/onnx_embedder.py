@@ -50,6 +50,7 @@ class OnnxEmbedder(Embedder):
         max_length: int = 512,
         normalize: bool = True,
         batch_size: int = 32,
+        revision: str | None = None,
     ):
         """Configure the HF `repo`, output `dim`, pooling strategy, optional
         asymmetric `query_instruction`, truncation `max_length`, whether to
@@ -57,6 +58,7 @@ class OnnxEmbedder(Embedder):
         if pooling not in ("cls", "mean"):
             raise ValueError(f"pooling must be 'cls' or 'mean', got {pooling!r}")
         self._repo = repo
+        self._revision = revision
         self._dim = dim
         self._pooling = pooling
         self._query_instruction = query_instruction
@@ -74,7 +76,7 @@ class OnnxEmbedder(Embedder):
     def profile(self) -> EmbeddingProfile:
         if self._profile is None:
             require_startup_loading()
-            revision, tokenizer = tokenizer_identity(self._repo)
+            revision, tokenizer = tokenizer_identity(self._repo, self._revision)
             self._profile = EmbeddingProfile(
                 "onnx",
                 self._repo,

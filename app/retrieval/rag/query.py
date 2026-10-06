@@ -111,7 +111,7 @@ _CACHED_FIELDS = (
     "evidence_origin",
     "answer_status",
 )
-_CITATION_SCHEMA_VERSION = 14
+_CITATION_SCHEMA_VERSION = 15
 
 
 def _cache_compatible(payload: dict) -> bool:

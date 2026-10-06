@@ -106,11 +106,15 @@ class PgVectorStore(VectorStore):
         hnsw_ef_search: int = 100,
         lexical_only_cap: int = 10,
         profile: EmbeddingProfile | None = None,
+        workspace: bool = False,
     ):
         """Bind to the Postgres database at `dsn`; `dim` is the embedding size."""
         self.dsn = dsn
         self.dim = dim
         self.profile = profile
+        self.workspace = workspace
+        self.table = "workspace_vector_chunks" if workspace else "vector_chunks"
+        self.view = "workspace_retrieval_vectors" if workspace else "retrieval_vectors"
         self.candidate_multiplier = candidate_multiplier
         self.min_candidates = min_candidates
         self.hnsw_m = hnsw_m
@@ -162,6 +166,7 @@ class PgVectorStore(VectorStore):
                 raise ValueError("An explicit embedding profile is required")
             ensure_profile(cur, self.profile)
             refresh_retrieval_view(cur)
+            cur.execute(_SCHEMA.with_name("workspace_schema.sql").read_text(encoding="utf-8"))
 
     def upsert(self, points: list[VectorPoint]) -> None:
         """Insert or replace the given chunk points."""
@@ -169,7 +174,7 @@ class PgVectorStore(VectorStore):
             return
         validate_vectors([p.vector for p in points], len(points), self.dim)
         with transaction(self.dsn) as cur:
-            check_profile(cur, self.profile.id)
+            check_profile(cur, self.profile.id, self.workspace)
             for p in points:
                 cur.execute(
                     "SELECT 1 FROM deleted_documents WHERE tenant_id=%s AND document_id=%s",
@@ -186,7 +191,7 @@ class PgVectorStore(VectorStore):
                     p.payload.get("author"),
                 )
                 cur.execute(
-                    "INSERT INTO vector_chunks "
+                    f"INSERT INTO {self.table} "
                     "(chunk_id, tenant_id, document_id, scope, deleted, embedding, "
                     "payload, tsv, updated_at) "
                     "VALUES (%s, %s, %s, %s, false, %s, %s, "
@@ -195,14 +200,14 @@ class PgVectorStore(VectorStore):
                     "tenant_id=excluded.tenant_id, document_id=excluded.document_id, "
                     "scope=excluded.scope, deleted=false, embedding=excluded.embedding, "
                     "payload=excluded.payload, tsv=excluded.tsv, updated_at=now() "
-                    "WHERE vector_chunks.generation_id IS NULL",
+                    f"WHERE {self.table}.generation_id IS NULL",
                     (
                         p.chunk_id,
                         p.tenant_id,
                         p.payload.get("_id", ""),
                         p.payload.get("scope", "tenant"),
                         p.vector,
-                        Json(p.payload),
+                        Json(dict(p.payload, embedding_profile_id=self.profile.id)),
                         _TS_CONFIG,
                         searchable,
                     ),
@@ -214,22 +219,36 @@ class PgVectorStore(VectorStore):
         """Tombstone all chunks of a document; return the number removed."""
         with transaction(self.dsn) as cur:
             cur.execute(
-                "UPDATE vector_chunks SET deleted=true, updated_at=now() "
+                f"UPDATE {self.table} SET deleted=true, updated_at=now() "
                 "WHERE tenant_id=%s AND document_id=%s AND deleted=false",
                 (tenant_id, document_id),
             )
             removed = cur.rowcount
+            if not self.workspace:
+                cur.execute(
+                    "UPDATE workspace_vector_chunks SET deleted=true,updated_at=now() "
+                    "WHERE tenant_id=%s AND document_id=%s AND deleted=false",
+                    (tenant_id, document_id),
+                )
+                removed += cur.rowcount
         return removed
 
     def count(self, tenant_id: str) -> int:
         """Number of non-deleted chunk rows for a tenant."""
         with transaction(self.dsn) as cur:
             cur.execute(
-                "SELECT COUNT(*) AS n FROM retrieval_vectors vector_chunks WHERE tenant_id=%s AND deleted=false"
+                f"SELECT COUNT(*) AS n FROM {self.view} vector_chunks WHERE tenant_id=%s AND deleted=false"
                 + _ACTIVE,
                 (tenant_id,),
             )
             n = cur.fetchone()["n"]
+            if not self.workspace:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM workspace_retrieval_vectors "
+                    "WHERE tenant_id=%s AND deleted=false",
+                    (tenant_id,),
+                )
+                n += cur.fetchone()["n"]
         return n
 
     def validate_sources(self, tenant_id: str, chunk_ids: list[str], access=None) -> bool:
@@ -237,10 +256,11 @@ class PgVectorStore(VectorStore):
             return False
         acl, params = acl_pushdown(access)
         with transaction(self.dsn) as cur:
-            check_profile(cur, self.profile.id)
+            check_profile(cur, self.profile.id, self.workspace)
             cur.execute(
-                "SELECT chunk_id,payload FROM retrieval_vectors vector_chunks "
+                f"SELECT chunk_id,payload FROM {self.view} vector_chunks "
                 "WHERE deleted=false AND (tenant_id=%s OR scope='global') AND chunk_id=ANY(%s) "
+                + self._profile_filter()
                 + acl,
                 (tenant_id, chunk_ids, *params),
             )
@@ -259,11 +279,12 @@ class PgVectorStore(VectorStore):
             return []
         acl, params = acl_pushdown(access)
         with transaction(self.dsn) as cur:
-            check_profile(cur, self.profile.id)
+            check_profile(cur, self.profile.id, self.workspace)
             cur.execute(
                 "WITH visible AS MATERIALIZED ("
-                "SELECT chunk_id,payload,document_id,tenant_id,generation_id FROM retrieval_vectors vector_chunks "
+                f"SELECT chunk_id,payload,document_id,tenant_id,generation_id FROM {self.view} vector_chunks "
                 "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
+                + self._profile_filter()
                 + acl
                 + "), anchors AS (SELECT v.*,c.ordinal FROM visible v JOIN chunks c ON c.id=v.chunk_id "
                 "WHERE v.chunk_id=ANY(%s)) "
@@ -301,7 +322,7 @@ class PgVectorStore(VectorStore):
 
         acl, params = acl_pushdown(access)
         with transaction(self.dsn) as cur:
-            check_profile(cur, self.profile.id)
+            check_profile(cur, self.profile.id, self.workspace)
             rows = self._lexical_candidates(
                 cur, tenant_id, question, 200, acl + " AND payload->>'modality'='table'", params
             )
@@ -322,9 +343,10 @@ class PgVectorStore(VectorStore):
     def _dense_candidates(self, cur, tenant_id, query, pool_size, acl_sql="", acl_params=()):
         """HNSW nearest-neighbour candidates, ACL-filtered before the LIMIT."""
         cur.execute(
-            "SELECT count(*) AS n FROM (SELECT 1 FROM retrieval_vectors vector_chunks "
+            f"SELECT count(*) AS n FROM (SELECT 1 FROM {self.view} vector_chunks "
             "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
             + _ACTIVE
+            + self._profile_filter()
             + acl_sql
             + " LIMIT 1001) eligible",
             (tenant_id, *acl_params),
@@ -339,22 +361,27 @@ class PgVectorStore(VectorStore):
         )
         if eligible <= 1000:
             cur.execute(
-                "WITH eligible AS MATERIALIZED (SELECT chunk_id,payload,embedding FROM retrieval_vectors vector_chunks "
+                f"WITH eligible AS MATERIALIZED (SELECT chunk_id,payload,embedding FROM {self.view} vector_chunks "
                 "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
                 + _ACTIVE
+                + self._profile_filter()
                 + acl_sql
                 + ") SELECT chunk_id,payload,1-(embedding <=> %s::vector) AS dense_score FROM eligible "
                 "ORDER BY embedding <=> %s::vector,chunk_id LIMIT %s",
                 (tenant_id, *acl_params, query, query, pool_size),
             )
             return cur.fetchall()
+        distance = f"embedding::vector({self.dim})" if self.workspace else "embedding"
+        dimension_filter = f" AND vector_dims(embedding)={self.dim}" if self.workspace else ""
         cur.execute(
-            "SELECT chunk_id, payload, 1 - (embedding <=> %s::vector) AS dense_score "
-            "FROM retrieval_vectors vector_chunks "
+            f"SELECT chunk_id, payload, 1 - ({distance} <=> %s::vector) AS dense_score "
+            f"FROM {self.view} vector_chunks "
             "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
             + _ACTIVE
+            + self._profile_filter()
             + acl_sql
-            + " ORDER BY embedding <=> %s::vector LIMIT %s",
+            + dimension_filter
+            + f" ORDER BY {distance} <=> %s::vector LIMIT %s",
             (query, tenant_id, *acl_params, query, pool_size),
         )
         return cur.fetchall()
@@ -365,9 +392,13 @@ class PgVectorStore(VectorStore):
         cur.execute(
             "SELECT chunk_id, payload, "
             "ts_rank_cd(tsv, q) AS lex_score "
-            "FROM retrieval_vectors vector_chunks, websearch_to_tsquery(%s, %s) AS q "
+            f"FROM {self.view} vector_chunks, websearch_to_tsquery(%s, %s) AS q "
             "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
-            "AND tsv @@ q " + _ACTIVE + acl_sql + " ORDER BY lex_score DESC, chunk_id LIMIT %s",
+            "AND tsv @@ q "
+            + _ACTIVE
+            + self._profile_filter()
+            + acl_sql
+            + " ORDER BY lex_score DESC, chunk_id LIMIT %s",
             (_TS_CONFIG, lexical_query(query_text), tenant_id, *acl_params, pool_size),
         )
         return cur.fetchall()
@@ -401,7 +432,7 @@ class PgVectorStore(VectorStore):
         )
 
         with transaction(self.dsn) as cur:
-            check_profile(cur, self.profile.id)
+            check_profile(cur, self.profile.id, self.workspace)
 
             cur.execute(f"SET LOCAL hnsw.ef_search = {int(self.hnsw_ef_search)}")
             dense_rows = self._dense_candidates(
@@ -485,6 +516,12 @@ class PgVectorStore(VectorStore):
             )
             for cid in ordered
         ]
+
+    def _profile_filter(self) -> str:
+        # The profile ID is a SHA-256 produced by EmbeddingProfile, never user SQL.
+        return (
+            f" AND payload->>'embedding_profile_id'='{self.profile.id}'" if self.workspace else ""
+        )
 
     @staticmethod
     def _hit(chunk_id, score, payload, dense, lex, hybrid) -> SearchHit:

@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.auth import get_container, get_principal, require_admin, require_operator
 from app.shared.container import Container
 from app.shared.domain.models import Principal, Role
+from app.shared.gateway.client import GatewayError
 from app.shared.ports.metadata_store import EmailAlreadyRegistered
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -77,6 +78,8 @@ class RegisterRequest(BaseModel):
     email: str = Field(..., max_length=320)
     password: str = Field(..., min_length=8, max_length=200)
     display_name: str | None = Field(default=None, max_length=200)
+    chat_model: str | None = Field(default=None, max_length=128)
+    embedding_model: str | None = Field(default=None, max_length=128)
 
 
 class LoginRequest(BaseModel):
@@ -96,7 +99,12 @@ def workspace_identity(
     principal: Principal = Depends(get_principal),
     container: Container = Depends(get_container),
 ) -> dict:
+    models = container.metadata.get_workspace_models(principal.tenant_id) or {
+        "chat_model": container.settings.chat_model,
+        "embedding_model": container.settings.embedding_model,
+    }
     return {
+        **models,
         **container.metadata.get_workspace_identity(principal),
         "role": principal.role.value,
         "manage_team": principal.role == Role.ADMIN,
@@ -202,23 +210,59 @@ def register(
     if container.metadata.get_user_by_email(email) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "an account with this email already exists")
 
+    chat_model = req.chat_model or container.settings.chat_model
+    embedding_model = req.embedding_model or container.settings.embedding_model
+    if req.chat_model is not None or req.embedding_model is not None:
+        catalog = model_options(container)
+        if chat_model not in {item["id"] for item in catalog["chat_models"]}:
+            raise HTTPException(400, "Select an available non-Claude chat model")
+        if embedding_model not in {item["id"] for item in catalog["embedding_models"]}:
+            raise HTTPException(400, "Select an available embedding model")
+
     tenant_name = (req.display_name or email.split("@")[0]).strip()[:200] or email
-    tenant_id = container.metadata.create_tenant(tenant_name)
     token = "sk-" + secrets.token_urlsafe(24)
+    selected_models = req.chat_model is not None or req.embedding_model is not None
     try:
-        user_id = container.metadata.create_user_with_password(
-            tenant_id, email, Role.ADMIN.value, token, _hash_password(req.password)
-        )
+        if selected_models:
+            tenant_id, user_id = container.metadata.create_workspace_with_models(
+                tenant_name, email, token, _hash_password(req.password), chat_model, embedding_model
+            )
+        else:
+            tenant_id = container.metadata.create_tenant(tenant_name)
+            user_id = container.metadata.create_user_with_password(
+                tenant_id, email, Role.ADMIN.value, token, _hash_password(req.password)
+            )
     except EmailAlreadyRegistered:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "an account with this email already exists"
         ) from None
+
+    if selected_models:
+        if container.workspace_runtime and not (
+            embedding_model == container.settings.embedding_model
+            and container.settings.embedding_provider == "gateway"
+        ):
+            container.workspace_runtime.prepare(embedding_model)
 
     container.metadata.write_audit(
         tenant_id, user_id, "onboarding_register", tenant_id, {"email": email}
     )
     log.info("onboarding register", extra={"event": "onboarding_register", "tenant_id": tenant_id})
     return {"api_token": token}
+
+
+@router.get("/models")
+def model_options(container: Container = Depends(get_container)) -> dict:
+    """Public signup choices; credentials and gateway connection details stay server-side."""
+    try:
+        catalog = container.model_catalog.get()
+    except GatewayError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {
+        **catalog,
+        "default_chat_model": container.settings.chat_model,
+        "default_embedding_model": container.settings.embedding_model,
+    }
 
 
 @router.post("/login")

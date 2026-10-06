@@ -33,6 +33,15 @@ class GatewayError(RuntimeError):
         self.status_code = status_code
 
 
+class VisionText(str):
+    """Transcription with billed completion usage; remains string-compatible."""
+
+    def __new__(cls, text: str, completion_tokens: int):
+        result = super().__new__(cls, text)
+        result.completion_tokens = completion_tokens
+        return result
+
+
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
 
 
@@ -347,4 +356,12 @@ class LiteLLMClient:
                 raise GatewayError("Vision response is incomplete or refused")
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise GatewayError("Vision response has an invalid schema") from exc
-        return text
+        usage = data.get("usage") or {}
+        completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        # Missing usage must not bypass the spending guard. Completion usage
+        # includes reasoning tokens when the provider reports them in its total.
+        if type(completion_tokens) is not int or completion_tokens < 0:
+            completion_tokens = max_tokens
+        if completion_tokens > max_tokens:
+            raise GatewayError("Vision completion usage exceeds its requested token limit")
+        return VisionText(text, completion_tokens)

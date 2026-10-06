@@ -127,19 +127,32 @@ header.site { padding-top: 12px; padding-bottom: 12px; min-height: 72px; }
 .band .val { font-size: 30px; }
 .band .note { background: transparent; border: 0; box-shadow: none; backdrop-filter: none;
   padding: 0; margin: 6px 0 0; color: var(--gray-3); }
-#askhistlist .doc { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; }
-#askhistlist .doc .nm { flex: none; width: 100%; white-space: normal; overflow-wrap: break-word;
-  font-size: 14px; line-height: 1.5; }
-#askhistlist .asktag { max-width: 100%; white-space: normal; font-size: 10px; }
+#askhistlist .doc { display: flex; align-items: center; padding: 7px 12px;
+  height: 36px; min-height: 36px; box-sizing: border-box; overflow: hidden;
+  margin-bottom: 2px; border: 1px solid transparent; border-radius: 12px;
+  background: transparent; box-shadow: none; transform: none; }
+#askhistlist .doc::before { display: none; }
+#askhistlist .doc .nm { flex: 1; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; font-size: 14px; line-height: 20px; }
+#askhistlist .doc:hover { background: var(--yellow-1); border-color: transparent;
+  box-shadow: none; transform: none; }
+#askhistlist .doc.sel { background: var(--yellow-3); border-color: var(--sol);
+  box-shadow: none; }
+#askhistlist .doc.sel .nm { font-weight: 700; }
+#askhistlist .doc:focus-visible { outline: 2px solid var(--teal-ink); outline-offset: -2px; }
 .pagehead-row { flex-wrap: wrap; }
 .pagehead-row > div { flex: 1 1 500px; }
 .workspace-badge { max-width: 100%; white-space: normal; }
 .passage-overlay { z-index: 2; }
 .passage-overlay rect { stroke: var(--teal-ink); stroke-width: 2.5; fill: rgba(251,226,50,.22); }
+.passage-overlay rect.chunk-outline { fill: none; stroke: var(--sol); stroke-width: 2.5;
+  stroke-dasharray: none; vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 3px rgba(251,226,50,.95)) drop-shadow(0 0 7px rgba(251,226,50,.55)); }
 .source-selection { color: var(--rs-black); background: var(--yellow-3);
   border: 2px solid var(--teal-ink); border-radius: 4px; padding: 2px;
   box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-.source-chunk.cited { border: 2px solid var(--teal-ink); }
+.source-chunk.cited { border: 2px solid var(--sol);
+  box-shadow: 0 0 0 1px rgba(251,226,50,.35), 0 0 14px rgba(251,226,50,.4); }
 .source-body > .source-text { min-height: 0; }
 .source-highlight-note { margin: 0 0 14px; color: var(--gray-7); font-size: 14px; }
 .inline-source header { gap: 12px; }

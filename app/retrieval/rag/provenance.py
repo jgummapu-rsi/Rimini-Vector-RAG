@@ -93,6 +93,25 @@ def citation_provenance(meta: dict[str, Any] | None, source_type: str | None) ->
                 item[key] = span[key]
         regions.append(item)
 
+    # Preserve the whole chunk's extent separately from quote-selected regions.
+    # Compute before truncation so long chunks retain their complete outline.
+    bounds: dict[int, list[float]] = {}
+    for region in regions:
+        x, y = region["x"], region["y"]
+        right, bottom = x + region["width"], y + region["height"]
+        box = bounds.setdefault(region["page"], [x, y, right, bottom])
+        box[:] = [min(box[0], x), min(box[1], y), max(box[2], right), max(box[3], bottom)]
+    chunk_regions = [
+        {
+            "page": page,
+            "x": box[0],
+            "y": box[1],
+            "width": round(min(1.0, box[2]) - box[0], 6),
+            "height": round(min(1.0, box[3]) - box[1], 6),
+            "precision": "element_region",
+        }
+        for page, box in sorted(bounds.items())
+    ]
     total = len(regions)
     regions = regions[:_MAX_REGIONS]
     pages = sorted({int(page) for page in (meta.get("pages") or []) if page})
@@ -115,6 +134,7 @@ def citation_provenance(meta: dict[str, Any] | None, source_type: str | None) ->
         "pages": pages,
         "locator": locator,
         "regions": regions,
+        "chunk_regions": chunk_regions,
         "regions_truncated": total > len(regions),
     }
 

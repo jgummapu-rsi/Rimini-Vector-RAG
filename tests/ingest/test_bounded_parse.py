@@ -16,7 +16,7 @@ from app.ingest.pipeline.safety import UnsafeContentError, check_archive_expansi
 from app.ingest.worker import _handle_job_failure
 from app.shared.config import Settings
 from app.shared.domain.models import Document, Job
-from app.shared.gateway.client import LiteLLMClient
+from app.shared.gateway.client import LiteLLMClient, VisionText
 from app.shared.ids import new_object_id
 
 
@@ -172,3 +172,93 @@ def test_partial_native_ipc_frame_cannot_bypass_deadline():
     finally:
         parent.close()
         child.close()
+
+
+def test_many_short_vision_responses_use_actual_tokens_and_reuse_on_retry():
+    frames = [Image.new("RGB", (8, 8), (index, 0, 0)) for index in range(65)]
+    image = io.BytesIO()
+    frames[0].save(image, format="TIFF", save_all=True, append_images=frames[1:])
+    artifacts = {}
+
+    class Gateway:
+        vision_model = "test-vision"
+        calls = 0
+        fail_at = 40
+
+        async def vision_bounded(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == self.fail_at:
+                raise TimeoutError("temporary gateway failure")
+            assert kwargs["max_tokens"] == 8192
+            return VisionText("Invoice number 00123", 10)
+
+    gateway = Gateway()
+    cfg = Settings(_env_file=None)
+    args = ("frames.tiff", image.getvalue(), gateway, cfg, artifacts.get, artifacts.__setitem__)
+    with pytest.raises(TimeoutError, match="temporary"):
+        extract_bounded(*args)
+    gateway.fail_at = None
+    elements, summary = extract_bounded(*args)
+    assert len(elements) == 65
+    assert summary["vision_reused"] == 39
+    assert summary["vision_calls"] == 26
+    assert summary["vision_completion_tokens"] == 260
+
+
+def test_vision_usage_still_enforces_total_completion_budget():
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(
+        image, format="TIFF", save_all=True, append_images=[Image.new("RGB", (8, 8), "black")]
+    )
+
+    class Gateway:
+        vision_model = "test-vision"
+        calls = 0
+
+        async def vision_bounded(self, *args, **kwargs):
+            self.calls += 1
+            assert kwargs["max_tokens"] == 20
+            return VisionText("Evidence", 20)
+
+    gateway = Gateway()
+    with pytest.raises(UnsafeContentError, match="completion-token budget"):
+        extract_bounded(
+            "frames.tiff",
+            image.getvalue(),
+            gateway,
+            Settings(_env_file=None, max_vision_tokens=20),
+            lambda key: None,
+            lambda key, value: None,
+        )
+    assert gateway.calls == 1
+
+
+@pytest.mark.parametrize("usage,expected", [({"completion_tokens": 7}, 7), ({}, 32)])
+def test_gateway_vision_returns_usage_with_conservative_fallback(monkeypatch, usage, expected):
+    async def handle(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "Invoice 00123"}}],
+                "usage": usage,
+            },
+        )
+
+    factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: factory(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    gateway = LiteLLMClient("https://gateway.test", "test", "vision")
+    result = asyncio.run(
+        gateway.vision_bounded(
+            _picture(),
+            "transcribe",
+            "image/png",
+            timeout_seconds=5,
+            max_tokens=32,
+        )
+    )
+    assert result == "Invoice 00123"
+    assert result.completion_tokens == expected

@@ -42,6 +42,7 @@ STAGES = [
 
 def run_job(container: Container, job: Job) -> None:
     with renewed_lease(container.queue, job, container.settings.job_lease_seconds) as check:
+        container = container.for_workspace(job.tenant_id)
         _run_claimed_job(container, job, check)
 
 

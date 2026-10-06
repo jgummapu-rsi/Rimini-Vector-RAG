@@ -220,7 +220,7 @@ body.chat-page { height: 100dvh; overflow: hidden; }
 .chat-page #pagehead { display: none; }
 .chat-page #app, .chat-page #maincontent { min-height: 0; }
 #askLayout { padding: 0; gap: 0; align-items: stretch; min-height: 0; }
-#askLayout .chat-history { position: static; width: 240px; flex: 0 0 240px; max-height: none;
+#askLayout .chat-history { position: static; width: 280px; flex: 0 0 280px; max-height: none;
   border: 0; border-right: 1px solid var(--gray-2); border-radius: 0; background: var(--gray-1); }
 #newQuestion { margin: 24px 18px; }
 #askLayout .listhead { border: 0; padding-top: 0; }
@@ -261,6 +261,7 @@ body.chat-page { height: 100dvh; overflow: hidden; }
 #askform .advanced summary::before { content: '+'; font-size: 20px; }
 #askform .advanced[open] summary::before { content: '−'; }
 #askform .advanced input { max-width: 120px; }
+#askmodel { width: 100%; max-width: 300px; }
 #askform .btn { width: auto; min-width: 154px; gap: 14px; }
 .composer-hint { max-width: 880px; margin: 12px auto 0; text-align: center; font-size: 13px; color: var(--gray-7); }
 .composer-hint span { white-space: nowrap; }
@@ -276,13 +277,13 @@ body.chat-page { height: 100dvh; overflow: hidden; }
 #askdetail .errbox { font-family: var(--font); white-space: normal; }
 @media (min-width: 1600px) { #askLayout { padding: 0; } }
 @media (max-width: 1100px) {
-  #askLayout .chat-history { width: 200px; flex-basis: 200px; }
+  #askLayout .chat-history { width: 240px; flex-basis: 240px; }
   .chat-scroll { padding: 24px; }
   .composer-wrap { padding: 24px 24px 18px; }
 }
 @media (max-width: 900px) {
   #askLayout { flex-direction: row; }
-  #askLayout .chat-history { width: 180px; flex-basis: 180px; }
+  #askLayout .chat-history { width: 220px; flex-basis: 220px; }
   #askform { display: flex; }
   #askform .advanced label { margin-top: 8px; }
 }

@@ -31,6 +31,23 @@ class IngestionConflict(ValueError):
 
 
 class MetadataStore(ABC):
+    def create_workspace_with_models(
+        self,
+        name: str,
+        email: str,
+        token: str,
+        password_hash: str,
+        chat_model: str,
+        embedding_model: str,
+    ) -> tuple[str, str]:
+        raise NotImplementedError
+
+    def get_workspace_models(self, tenant_id: str) -> dict | None:
+        raise NotImplementedError
+
+    def set_workspace_models(self, tenant_id: str, chat_model: str, embedding_model: str) -> None:
+        raise NotImplementedError
+
     @abstractmethod
     def update_document_access(
         self, tenant_id: str, document_id: str, visibility: str, scope: str

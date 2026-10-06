@@ -16,6 +16,7 @@ from app.retrieval.rag.access import access_predicate
 from app.retrieval.rag.query import answer_query, generate_answer_from_chunks, retrieve_chunks
 from app.shared.container import Container
 from app.shared.domain.models import Principal
+from app.shared.gateway.client import GatewayError
 from app.shared.observability import bind
 
 router = APIRouter()
@@ -86,6 +87,7 @@ class CitationProvenance(BaseModel):
     pages: list[int] = Field(default_factory=list, max_length=100)
     locator: dict = Field(default_factory=dict)
     regions: list[BoundingRegion] = Field(default_factory=list, max_length=4096)
+    chunk_regions: list[BoundingRegion] = Field(default_factory=list, max_length=4096)
     regions_truncated: bool = False
     selection_status: str | None = None
 
@@ -142,9 +144,16 @@ class AnswerRequest(QueryRequest):
 
 def _allowed_model(container: Container, requested: str | None) -> str:
     model = requested or container.settings.chat_model
+    if "claude" in model.lower() or "anthropic" in model.lower():
+        raise HTTPException(400, "Claude models are not available for answer generation")
     allowed = {container.settings.chat_model, *container.settings.allowed_chat_models}
     if model not in allowed:
-        raise HTTPException(400, "Requested generation model is not allowed")
+        try:
+            available = container.model_catalog.get() if container.model_catalog else {}
+        except GatewayError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        if model not in {item["id"] for item in available.get("chat_models", [])}:
+            raise HTTPException(400, "Requested generation model is not allowed")
     return model
 
 
@@ -159,6 +168,7 @@ def query(
     (our own UI included) can bring their own LLM, or chain into
     `POST /answer` with this response's fields to get one generated with the
     same model/cache this system always used."""
+    container = container.for_workspace(principal.tenant_id)
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
     container.metrics.incr("query.requests")
     t0 = perf_counter()
@@ -202,6 +212,7 @@ def ask(
     the fast path for a caller that just wants this system's own grounded
     answer. See `AskRequest` for how this differs from chaining `/query` +
     `/answer`."""
+    container = container.for_workspace(principal.tenant_id)
     model = _allowed_model(container, req.model)
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
     log.info(
@@ -270,6 +281,7 @@ def answer(
     ACL check here -- the contexts are opaque strings the caller already has,
     typically because `POST /query` already gave them out under ACL; auth is
     just an abuse/cost guard, same as `/query`)."""
+    container = container.for_workspace(principal.tenant_id)
     model = _allowed_model(container, req.model)
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
     container.metrics.incr("answer.requests")

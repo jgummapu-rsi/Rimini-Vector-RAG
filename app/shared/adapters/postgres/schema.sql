@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS users (
     UNIQUE (tenant_id, email)
 );
 
+CREATE TABLE IF NOT EXISTS workspace_models (
+    tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
+    chat_model TEXT NOT NULL,
+    embedding_model TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_password_unique
     ON users(email) WHERE password_hash IS NOT NULL;
 

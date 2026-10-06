@@ -17,10 +17,12 @@ log = logging.getLogger(__name__)
 
 
 class PostgresPublicationStore(PublicationStore):
-    def __init__(self, dsn: str, profile):
+    def __init__(self, dsn: str, profile, workspace: bool = False):
         self.dsn = dsn
         self.dim = profile.dimensions
         self.profile = profile
+        self.workspace = workspace
+        self.table = "workspace_vector_chunks" if workspace else "vector_chunks"
 
     def publish(self, job, document, chunks, points, metadata, delta) -> str:
         if not job.lease_token or not job.generation_id:
@@ -39,7 +41,7 @@ class PostgresPublicationStore(PublicationStore):
             if chunk.content_sha256 != hashlib.sha256(chunk.text.encode()).hexdigest():
                 raise ValueError("Publication evidence hash mismatch")
         with transaction(self.dsn) as cur:
-            check_profile(cur, self.profile.id)
+            check_profile(cur, self.profile.id, self.workspace)
             cur.execute(
                 "SELECT * FROM documents WHERE id=%s AND tenant_id=%s FOR UPDATE",
                 (document.id, document.tenant_id),
@@ -97,7 +99,7 @@ class PostgresPublicationStore(PublicationStore):
                     scope=current["scope"],
                 )
                 cur.execute(
-                    "INSERT INTO vector_chunks "
+                    f"INSERT INTO {self.table} "
                     "(chunk_id,tenant_id,document_id,scope,deleted,embedding,payload,tsv,generation_id) "
                     "VALUES (%s,%s,%s,%s,false,%s,%s,to_tsvector('english',%s),%s)",
                     (
@@ -139,7 +141,7 @@ class PostgresPublicationStore(PublicationStore):
                     ),
                 )
             cur.execute(
-                "UPDATE vector_chunks SET deleted=true WHERE document_id=%s AND tenant_id=%s "
+                f"UPDATE {self.table} SET deleted=true WHERE document_id=%s AND tenant_id=%s "
                 "AND generation_id IS NULL",
                 (document.id, document.tenant_id),
             )

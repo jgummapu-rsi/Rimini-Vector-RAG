@@ -51,8 +51,10 @@ def disposable_settings(database_url: str, redis_url: str):
             close_pool(dsn)
             try:
                 indexes = cache.execute_command("FT._LIST")
-                if namespace.encode() in indexes:
-                    cache.execute_command("FT.DROPINDEX", namespace, "DD")
+                for index in indexes:
+                    name = index.decode() if isinstance(index, bytes) else index
+                    if name == namespace or name.startswith(namespace + "_"):
+                        cache.execute_command("FT.DROPINDEX", name, "DD")
                 keys = list(cache.scan_iter(match=f"{namespace}:*"))
                 if keys:
                     cache.delete(*keys)

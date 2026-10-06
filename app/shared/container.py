@@ -25,11 +25,13 @@ from app.shared.adapters.postgres.metrics import PostgresMetrics
 from app.shared.adapters.request_gate import RedisRequestGate
 from app.shared.config import Settings, settings
 from app.shared.gateway.client import LiteLLMClient
+from app.shared.model_catalog import ModelCatalog
 from app.shared.ports.embedder import Embedder
 from app.shared.ports.metadata_store import MetadataStore
 from app.shared.ports.request_gate import RequestGate
 from app.shared.ports.vector_store import VectorStore
 from app.shared.rate_limit import RateLimiter
+from app.shared.workspace_runtime import WorkspaceRuntime
 
 log = logging.getLogger(__name__)
 
@@ -55,8 +57,15 @@ class Container:
     login_email_limiter: RateLimiter | None = None
     login_ip_limiter: RateLimiter | None = None
     register_ip_limiter: RateLimiter | None = None
+    model_catalog: ModelCatalog | None = None
+    workspace_runtime: WorkspaceRuntime | None = None
+
+    def for_workspace(self, tenant_id: str) -> Container:
+        return self.workspace_runtime.for_tenant(tenant_id) if self.workspace_runtime else self
 
     def close(self) -> None:
+        if self.workspace_runtime is not None:
+            self.workspace_runtime.close()
         try:
             if self.cache is not None:
                 self.cache.close()
@@ -165,7 +174,7 @@ def build_container(cfg: Settings = settings, embedder: Embedder | None = None) 
                 raise RuntimeError("Ingestion queue schema is missing")
         cache.check_ready()
 
-    return Container(
+    container = Container(
         settings=cfg,
         metadata=metadata,
         blob=blob,
@@ -196,4 +205,7 @@ def build_container(cfg: Settings = settings, embedder: Embedder | None = None) 
         register_ip_limiter=RateLimiter(
             cfg.register_rate_limit_per_ip, cfg.register_rate_limit_window_seconds
         ),
+        model_catalog=ModelCatalog(gateway),
     )
+    container.workspace_runtime = WorkspaceRuntime(container)
+    return container

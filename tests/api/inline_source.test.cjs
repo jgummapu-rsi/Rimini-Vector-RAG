@@ -22,6 +22,24 @@ assert.equal(group([{...line(.1, .102, .1), precision: 'word'},
   {...line(.205, .1, .1), precision: 'word'},
   {...line(.31, .102, .1), precision: 'word'}]).length, 1);
 assert.equal(group([{...line(.1, .1), precision: 'page_region'}])[0].approximate, true);
+// Chunk outlines use the full source extent, while quote highlights stay narrow.
+context.document = {createElementNS: (_, tag) => ({tag, attrs: {}, children: [],
+  setAttribute(name, value) { this.attrs[name] = value; },
+  append(...children) { this.children.push(...children); }})};
+vm.runInContext(html.slice(html.indexOf('function passageOverlay('), html.indexOf('function renderSourceText(')), context);
+const overlay = context.passageOverlay([line(.2, .3, .1)], 1, false,
+  [{page: 1, x: .1, y: .1, width: .7, height: .5},
+   {page: 2, x: .1, y: .1, width: .8, height: .8}]);
+assert.equal(overlay.children.length, 2);
+assert.equal(overlay.children[0].attrs.class, 'chunk-outline');
+assert.equal(overlay.children[0].attrs.x, 96);
+assert.equal(overlay.children[0].attrs.height, 508);
+assert.equal(overlay.children[1].attrs.x, 199.5);
+assert.equal(context.passageOverlay([], 1, true, []).children.length, 0);
+const edge = context.passageOverlay([], 1, true,
+  [{page: 1, x: 0, y: 0, width: 1, height: 1}]).children[0];
+assert.equal(edge.attrs.x, 0);
+assert.equal(edge.attrs.width, 1000);
 assert(!html.includes('id="inlineSourceBody"'));
 assert(html.includes('dialog.show()'));
 assert(html.includes('.answer-citation, .citation .open-source'));

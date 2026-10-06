@@ -18,6 +18,8 @@ RUNTIME_TABLES = (
     "corpus_epochs",
     "deleted_documents",
     "vector_chunks",
+    "workspace_models",
+    "workspace_vector_chunks",
 )
 
 
@@ -50,12 +52,23 @@ def apply_runtime_grants(cursor, schema: str, role: str) -> None:
                 sql.Identifier(schema), sql.Identifier(table), sql.Identifier(role)
             )
         )
-    for table in ("embedding_profile", "ingestion_generations", "retrieval_vectors"):
+    for table in (
+        "embedding_profile",
+        "ingestion_generations",
+        "retrieval_vectors",
+        "workspace_retrieval_vectors",
+        "workspace_embedding_profiles",
+    ):
         cursor.execute(
             sql.SQL("GRANT SELECT ON {}.{} TO {}").format(
                 sql.Identifier(schema), sql.Identifier(table), sql.Identifier(role)
             )
         )
+    cursor.execute(
+        sql.SQL("GRANT INSERT ON {}.workspace_embedding_profiles TO {}").format(
+            sql.Identifier(schema), sql.Identifier(role)
+        )
+    )
     cursor.execute(
         sql.SQL("GRANT INSERT ON {}.ingestion_generations TO {}").format(
             sql.Identifier(schema), sql.Identifier(role)
