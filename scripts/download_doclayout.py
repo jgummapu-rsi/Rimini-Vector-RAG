@@ -22,6 +22,7 @@ def download(directory: Path) -> Path:
     temporary = destination.with_suffix(".part")
     try:
         digest = hashlib.sha256()
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is a fixed HTTPS model URL; bytes are verified against SHA256 before use.
         with urllib.request.urlopen(URL, timeout=120) as response, temporary.open("wb") as output:
             while block := response.read(1024 * 1024):
                 digest.update(block)

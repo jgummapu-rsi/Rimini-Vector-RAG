@@ -150,10 +150,11 @@ class PgVectorStore(VectorStore):
                     )
             else:
                 ddl = _SCHEMA.read_text(encoding="utf-8").format(
-                    dim=dim,
-                    hnsw_m=self.hnsw_m,
-                    hnsw_ef_construction=self.hnsw_ef_construction,
+                    dim=int(dim),
+                    hnsw_m=int(self.hnsw_m),
+                    hnsw_ef_construction=int(self.hnsw_ef_construction),
                 )
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Checked-in schema template; all substituted DDL settings are coerced to integers above.
                 cur.execute(ddl)
 
             cur.execute("ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS tsv tsvector")
@@ -236,6 +237,7 @@ class PgVectorStore(VectorStore):
     def count(self, tenant_id: str) -> int:
         """Number of non-deleted chunk rows for a tenant."""
         with transaction(self.dsn) as cur:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- View is selected from two fixed names; _ACTIVE is constant SQL and tenant is bound.
             cur.execute(
                 f"SELECT COUNT(*) AS n FROM {self.view} vector_chunks WHERE tenant_id=%s AND deleted=false"
                 + _ACTIVE,
@@ -257,6 +259,7 @@ class PgVectorStore(VectorStore):
         acl, params = acl_pushdown(access)
         with transaction(self.dsn) as cur:
             check_profile(cur, self.profile.id, self.workspace)
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Fixed view/ACL fragments and SHA-256 profile ID; tenant, IDs and ACL values are bound.
             cur.execute(
                 f"SELECT chunk_id,payload FROM {self.view} vector_chunks "
                 "WHERE deleted=false AND (tenant_id=%s OR scope='global') AND chunk_id=ANY(%s) "
@@ -280,6 +283,7 @@ class PgVectorStore(VectorStore):
         acl, params = acl_pushdown(access)
         with transaction(self.dsn) as cur:
             check_profile(cur, self.profile.id, self.workspace)
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Fixed view/ACL fragments and SHA-256 profile ID; all caller values are bound.
             cur.execute(
                 "WITH visible AS MATERIALIZED ("
                 f"SELECT chunk_id,payload,document_id,tenant_id,generation_id FROM {self.view} vector_chunks "
@@ -342,6 +346,7 @@ class PgVectorStore(VectorStore):
 
     def _dense_candidates(self, cur, tenant_id, query, pool_size, acl_sql="", acl_params=()):
         """HNSW nearest-neighbour candidates, ACL-filtered before the LIMIT."""
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Internal ACL fragments contain placeholders; fixed view/profile SQL; caller values are bound.
         cur.execute(
             f"SELECT count(*) AS n FROM (SELECT 1 FROM {self.view} vector_chunks "
             "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
@@ -360,6 +365,7 @@ class PgVectorStore(VectorStore):
             (str(max(self.hnsw_ef_search, min(1000, pool_size * 40))),),
         )
         if eligible <= 1000:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Internal ACL fragments contain placeholders; fixed view/profile SQL; caller values are bound.
             cur.execute(
                 f"WITH eligible AS MATERIALIZED (SELECT chunk_id,payload,embedding FROM {self.view} vector_chunks "
                 "WHERE deleted=false AND (tenant_id=%s OR scope='global') "
@@ -371,8 +377,9 @@ class PgVectorStore(VectorStore):
                 (tenant_id, *acl_params, query, query, pool_size),
             )
             return cur.fetchall()
-        distance = f"embedding::vector({self.dim})" if self.workspace else "embedding"
-        dimension_filter = f" AND vector_dims(embedding)={self.dim}" if self.workspace else ""
+        distance = f"embedding::vector({int(self.dim)})" if self.workspace else "embedding"
+        dimension_filter = f" AND vector_dims(embedding)={int(self.dim)}" if self.workspace else ""
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Fixed view/internal ACL SQL, integer dimensions, SHA-256 profile; query and ACL values are bound.
         cur.execute(
             f"SELECT chunk_id, payload, 1 - ({distance} <=> %s::vector) AS dense_score "
             f"FROM {self.view} vector_chunks "
@@ -389,6 +396,7 @@ class PgVectorStore(VectorStore):
     def _lexical_candidates(self, cur, tenant_id, query_text, pool_size, acl_sql="", acl_params=()):
         """Independent lexical candidate list via full-text search, ranked by
         ts_rank_cd. Returns [] (not an error) when the query has no lexemes."""
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Fixed view/internal ACL SQL and SHA-256 profile; query and ACL values are bound.
         cur.execute(
             "SELECT chunk_id, payload, "
             "ts_rank_cd(tsv, q) AS lex_score "
@@ -434,7 +442,9 @@ class PgVectorStore(VectorStore):
         with transaction(self.dsn) as cur:
             check_profile(cur, self.profile.id, self.workspace)
 
-            cur.execute(f"SET LOCAL hnsw.ef_search = {int(self.hnsw_ef_search)}")
+            cur.execute(
+                "SELECT set_config('hnsw.ef_search',%s,true)", (str(int(self.hnsw_ef_search)),)
+            )
             dense_rows = self._dense_candidates(
                 cur, tenant_id, query, pool_size, acl_sql, acl_params
             )

@@ -31,6 +31,7 @@ def _fingerprint(rows) -> str:
 
 
 def _target_fingerprint(cur, name: str) -> str:
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- psycopg2 Identifier quotes the table name; no SQLAlchemy or raw interpolation.
     cur.execute(
         sql.SQL(
             "SELECT chunk_id,tenant_id,document_id,scope,deleted,payload,tsv,created_at,updated_at,generation_id,embedding::text AS embedding "
@@ -61,11 +62,13 @@ def build_shadow(dsn: str, embedder) -> str:
             "FROM vector_chunks ORDER BY chunk_id"
         )
         rows = cur.fetchall()
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- psycopg2 Identifier quotes the generated table name.
         cur.execute(
             sql.SQL(
                 "CREATE TABLE {} (LIKE vector_chunks INCLUDING DEFAULTS INCLUDING CONSTRAINTS)"
             ).format(sql.Identifier(name))
         )
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier and Literal quote all dynamic DDL components.
         cur.execute(
             sql.SQL("ALTER TABLE {} ALTER COLUMN embedding TYPE vector({})").format(
                 sql.Identifier(name), sql.Literal(profile.dimensions)
@@ -82,6 +85,7 @@ def build_shadow(dsn: str, embedder) -> str:
         with transaction(dsn) as cur:
             for row, vector in zip(batch, vectors, strict=True):
                 payload = dict(row["payload"], embedding_profile_id=profile.id)
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the table; row values use bound parameters.
                 cur.execute(
                     sql.SQL(
                         "INSERT INTO {} (chunk_id,tenant_id,document_id,scope,deleted,payload,tsv,created_at,updated_at,generation_id,embedding) "
@@ -102,17 +106,23 @@ def build_shadow(dsn: str, embedder) -> str:
                     ),
                 )
     with transaction(dsn) as cur:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated table name.
         cur.execute(
             sql.SQL("ALTER TABLE {} ADD PRIMARY KEY (chunk_id)").format(sql.Identifier(name))
         )
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated table name.
         cur.execute(
             sql.SQL("CREATE INDEX ON {} USING hnsw (embedding vector_cosine_ops)").format(
                 sql.Identifier(name)
             )
         )
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated table name.
         cur.execute(sql.SQL("CREATE INDEX ON {} USING gin (tsv)").format(sql.Identifier(name)))
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated table name.
         cur.execute(sql.SQL("CREATE INDEX ON {} (tenant_id,deleted)").format(sql.Identifier(name)))
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated table name.
         cur.execute(sql.SQL("CREATE INDEX ON {} (generation_id)").format(sql.Identifier(name)))
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated table name.
         cur.execute(sql.SQL("CREATE INDEX ON {} (document_id)").format(sql.Identifier(name)))
         cur.execute(
             "UPDATE embedding_migrations SET state='ready',target_fingerprint=%s WHERE name=%s",
@@ -141,6 +151,7 @@ def activate_shadow(dsn: str, name: str) -> str:
         migration = cur.fetchone()
         if migration is None:
             raise ValueError("A ready shadow migration is required")
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the validated migration table name.
         cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(sql.Identifier(name)))
         if (
             not migration.get("target_fingerprint")
@@ -160,15 +171,18 @@ def activate_shadow(dsn: str, name: str) -> str:
         rows = cur.fetchall()
         if _fingerprint(rows) != migration["fingerprint"]:
             raise ValueError("Corpus changed during shadow migration; rebuild before switching")
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the migration table name.
         cur.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(sql.Identifier(name)))
         if cur.fetchone()["n"] != len(rows):
             raise ValueError("Shadow migration coverage mismatch")
         cur.execute("SELECT profile_id,manifest FROM embedding_profile WHERE singleton=true")
         old_profile = cur.fetchone()
         cur.execute("DROP VIEW IF EXISTS retrieval_vectors")
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated backup table name.
         cur.execute(
             sql.SQL("ALTER TABLE vector_chunks RENAME TO {}").format(sql.Identifier(previous))
         )
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the migration table name.
         cur.execute(sql.SQL("ALTER TABLE {} RENAME TO vector_chunks").format(sql.Identifier(name)))
         refresh_retrieval_view(cur)
         cur.execute(

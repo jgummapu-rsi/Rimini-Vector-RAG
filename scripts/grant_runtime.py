@@ -19,11 +19,13 @@ def grant_runtime(dsn: str, schema: str, role: str) -> None:
         cursor.execute("SELECT has_schema_privilege(%s,%s,'CREATE')", (role, schema))
         if cursor.fetchone()[0]:
             raise ValueError("Runtime role still has schema CREATE through a public grant")
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the schema; table definition is fixed.
         cursor.execute(
             sql.SQL(
                 "CREATE TABLE IF NOT EXISTS {}.runtime_database_roles (role_name TEXT PRIMARY KEY)"
             ).format(sql.Identifier(schema))
         )
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the schema; role value is bound.
         cursor.execute(
             sql.SQL(
                 "INSERT INTO {}.runtime_database_roles VALUES (%s) ON CONFLICT DO NOTHING"

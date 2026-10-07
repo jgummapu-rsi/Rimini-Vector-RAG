@@ -26,6 +26,7 @@ def disposable_settings(database_url: str, redis_url: str):
     try:
         cache.execute_command("FT._LIST")
         with admin.cursor() as cur:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- psycopg2 Identifier quotes the randomly generated test database name.
             cur.execute(
                 sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(sql.Identifier(namespace))
             )
@@ -33,6 +34,7 @@ def disposable_settings(database_url: str, redis_url: str):
         try:
             with psycopg2.connect(dsn) as conn, conn.cursor() as cur:
                 cur.execute("CREATE EXTENSION vector WITH SCHEMA public")
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated test schema name.
                 cur.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(namespace)))
             dsn = make_dsn(dsn, options=f"-csearch_path={namespace},public")
             with TemporaryDirectory(prefix=namespace) as data_dir:
@@ -60,6 +62,7 @@ def disposable_settings(database_url: str, redis_url: str):
                     cache.delete(*keys)
             finally:
                 with admin.cursor() as cur:
+                    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes only this test's generated database name.
                     cur.execute(
                         sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(namespace))
                     )
