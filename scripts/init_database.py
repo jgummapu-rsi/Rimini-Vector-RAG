@@ -7,7 +7,7 @@ import psycopg2
 
 from app.shared.config import settings
 from app.shared.container import build_container
-from app.shared.observability import configure_logging
+from app.shared.logger import configure_logging
 
 log = logging.getLogger(__name__)
 

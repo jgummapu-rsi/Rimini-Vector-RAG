@@ -118,5 +118,5 @@ jobs:
           tags: rimini-vector-rag:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Validate development Compose profile
-        run: docker compose --profile development config --quiet
+      - name: Validate default development Compose stack
+        run: docker compose config --quiet

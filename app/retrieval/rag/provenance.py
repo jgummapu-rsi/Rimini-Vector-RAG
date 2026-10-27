@@ -74,9 +74,16 @@ def citation_provenance(meta: dict[str, Any] | None, source_type: str | None) ->
             round((right - left) / width, 6),
             round((lower - upper) / height, 6),
         )
-        if region in seen:
+        # Separate text ranges can share an image frame/crop rectangle. Keep
+        # their reading order so quote matching cannot skip intervening text.
+        identity = (
+            (*region, span.get("element"), span.get("start"), span.get("end"), span.get("text"))
+            if source_type == "image"
+            else region
+        )
+        if identity in seen:
             continue
-        seen.add(region)
+        seen.add(identity)
         item = {
             "page": region[0],
             "x": region[1],

@@ -19,6 +19,7 @@ import httpx
 
 from app.shared.domain.embedding import validate_vectors
 from app.shared.execution import cancellable, check_execution, remaining_seconds
+from app.shared.logger import gateway_headers, log_evidence, measured, record_usage
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +103,13 @@ class LiteLLMClient:
 
     def _headers(self, api_key: str) -> dict[str, str]:
         """Bearer-auth JSON headers for a request using `api_key`."""
-        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            **gateway_headers(),
+        }
 
+    @measured("gateway")
     def _post(self, path: str, payload: dict) -> dict:
         """POST `payload` to `path`, retrying transient failures with backoff."""
         base_url, api_key = self._resolve_config()
@@ -121,7 +127,7 @@ class LiteLLMClient:
                 resp = asyncio.run(cancellable(self._request(url, api_key, payload, remaining)))
                 if time.monotonic() > deadline:
                     raise GatewayError("Gateway request deadline exhausted", status_code=408)
-                dur_ms = round((time.perf_counter() - t0) * 1000, 1)
+                dur_ms = (time.perf_counter() - t0) * 1000
                 if resp.status_code >= 400:
                     raise GatewayError(
                         f"{resp.status_code}: {resp.text[:300]}", status_code=resp.status_code
@@ -134,16 +140,7 @@ class LiteLLMClient:
                     raise GatewayError(
                         "gateway returned a non-object JSON response", status_code=502
                     )
-                log.debug(
-                    "llm call",
-                    extra={
-                        "event": "llm_call",
-                        "path": path,
-                        "model": model,
-                        "duration_ms": dur_ms,
-                        "attempt": attempt,
-                    },
-                )
+                record_usage(data, resp.headers, model, dur_ms)
                 return data
             except TimeoutError as exc:
                 check_execution()
@@ -234,6 +231,7 @@ class LiteLLMClient:
 
     def chat(self, messages: list[dict], model: str, temperature: float = 0.0) -> str:
         """Chat completion (used for RAG answer generation)."""
+        log_evidence(messages)
         payload = {
             "model": model,
             "messages": messages,
@@ -297,9 +295,11 @@ class LiteLLMClient:
             raise GatewayError("vision response content is not text")
         return content
 
+    @measured("vision")
     async def vision_bounded(
         self, image_bytes: bytes, prompt: str, mime: str, *, timeout_seconds: float, max_tokens: int
     ) -> str:
+        started = time.perf_counter()
         if timeout_seconds <= 0 or max_tokens <= 0:
             raise GatewayError("Vision request budget exhausted")
         base_url, api_key = self._resolve_config()
@@ -345,6 +345,13 @@ class LiteLLMClient:
                             raise GatewayError("Vision response exceeds the response-byte limit")
         try:
             data = json.loads(body)
+            if isinstance(data, dict):
+                record_usage(
+                    data,
+                    response.headers,
+                    self.vision_model,
+                    (time.perf_counter() - started) * 1000,
+                )
             choice = data["choices"][0]
             message = choice["message"]
             text = message["content"]

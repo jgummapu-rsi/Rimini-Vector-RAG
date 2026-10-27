@@ -52,49 +52,54 @@ class ModelCatalog:
                 and time.monotonic() < self._expires
             ):
                 return self._cached
-            base, key = identity
-            try:
-                response = httpx.get(
-                    base.rstrip("/") + "/model/info",
-                    headers={"Authorization": "Bearer " + key},
-                    timeout=15,
-                )
-                response.raise_for_status()
-                data = response.json()["data"]
-                if not isinstance(data, list):
-                    raise ValueError("Invalid model catalog")
-            except (httpx.HTTPError, ValueError, KeyError) as exc:
-                raise GatewayError("The gateway model list is unavailable. Please retry.") from exc
-            chat, embeddings = {}, {}
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                name = entry.get("model_name")
-                upstream = (entry.get("litellm_params") or {}).get("model", "")
-                mode = (entry.get("model_info") or {}).get("mode")
-                if not isinstance(name, str) or not name or not isinstance(upstream, str):
-                    continue
-                if "claude" in (name + " " + upstream).lower() or "anthropic/" in upstream.lower():
-                    continue
-                # This application uses chat/completions, not Responses-only models.
-                if mode == "chat" and "/responses/" not in upstream:
-                    chat[name] = {"id": name, "label": name}
-                if mode == "embedding" and name in GATEWAY_EMBEDDINGS:
-                    embeddings[name] = {
-                        "id": name,
-                        "label": name + " — LiteLLM",
-                        "provider": "gateway",
-                        "dimensions": 1536,
-                    }
-            result = {
-                "chat_models": sorted(chat.values(), key=lambda item: item["id"]),
-                "embedding_models": [
-                    *sorted(embeddings.values(), key=lambda item: item["id"]),
-                    *[
-                        {k: value[k] for k in ("id", "label", "provider", "dimensions")}
-                        for value in LOCAL_EMBEDDINGS.values()
-                    ],
-                ],
-            }
+            result = self.fetch(*identity)
             self._identity, self._cached, self._expires = identity, result, time.monotonic() + 60
             return result
+
+    @staticmethod
+    def fetch(base: str, key: str) -> dict:
+        if not base or not key:
+            raise GatewayError("Enter your LiteLLM base URL and API key to load models.")
+        try:
+            response = httpx.get(
+                base.rstrip("/") + "/model/info",
+                headers={"Authorization": "Bearer " + key},
+                timeout=15,
+            )
+            response.raise_for_status()
+            data = response.json()["data"]
+            if not isinstance(data, list):
+                raise ValueError("Invalid model catalog")
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            raise GatewayError("The LiteLLM URL or API key could not load models.") from exc
+        chat, embeddings = {}, {}
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("model_name")
+            upstream = (entry.get("litellm_params") or {}).get("model", "")
+            mode = (entry.get("model_info") or {}).get("mode")
+            if not isinstance(name, str) or not name or not isinstance(upstream, str):
+                continue
+            if "claude" in (name + " " + upstream).lower() or "anthropic/" in upstream.lower():
+                continue
+            # This application uses chat/completions, not Responses-only models.
+            if mode == "chat" and "/responses/" not in upstream:
+                chat[name] = {"id": name, "label": name}
+            if mode == "embedding" and name in GATEWAY_EMBEDDINGS:
+                embeddings[name] = {
+                    "id": name,
+                    "label": name + " — LiteLLM",
+                    "provider": "gateway",
+                    "dimensions": 1536,
+                }
+        return {
+            "chat_models": sorted(chat.values(), key=lambda item: item["id"]),
+            "embedding_models": [
+                *sorted(embeddings.values(), key=lambda item: item["id"]),
+                *[
+                    {k: value[k] for k in ("id", "label", "provider", "dimensions")}
+                    for value in LOCAL_EMBEDDINGS.values()
+                ],
+            ],
+        }

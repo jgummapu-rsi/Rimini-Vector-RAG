@@ -53,6 +53,13 @@ class PostgresMetadataStore(MetadataStore):
                 (Json({"base_url": base_url, "api_key": api_key}),),
             )
 
+    def has_registered_users(self) -> bool:
+        with transaction(self.dsn) as cur:
+            cur.execute(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE password_hash IS NOT NULL) AS found"
+            )
+            return bool(cur.fetchone()["found"])
+
     def get_gateway_config(self) -> tuple[str, str] | None:
         with transaction(self.dsn) as cur:
             cur.execute("SELECT value FROM system_config WHERE key='gateway_config'")
@@ -595,8 +602,8 @@ class PostgresMetadataStore(MetadataStore):
             self._lock_idle_document(cur, job.tenant_id, job.document_id)
             cur.execute(
                 "INSERT INTO ingestion_jobs (id, document_id, tenant_id, stage, status, "
-                "attempts, blob_path, content_sha256, version) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "attempts, blob_path, content_sha256, version, correlation) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     job.id,
                     job.document_id,
@@ -607,6 +614,7 @@ class PostgresMetadataStore(MetadataStore):
                     job.blob_path,
                     job.content_sha256,
                     job.version,
+                    Json(job.correlation),
                 ),
             )
             cur.execute(
@@ -684,8 +692,8 @@ class PostgresMetadataStore(MetadataStore):
             )
             cur.execute(
                 "INSERT INTO ingestion_jobs (id, document_id, tenant_id, stage, status, "
-                "attempts, blob_path, content_sha256, version) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "attempts, blob_path, content_sha256, version, correlation) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     job.id,
                     job.document_id,
@@ -696,6 +704,7 @@ class PostgresMetadataStore(MetadataStore):
                     doc.blob_path,
                     doc.content_sha256,
                     doc.version,
+                    Json(job.correlation),
                 ),
             )
             cur.execute(
@@ -795,8 +804,8 @@ class PostgresMetadataStore(MetadataStore):
             version = int(row["version"]) if row else 1
             cur.execute(
                 "INSERT INTO ingestion_jobs (id, document_id, tenant_id, stage, status, "
-                "attempts, blob_path, content_sha256, version) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "attempts, blob_path, content_sha256, version, correlation) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     job.id,
                     job.document_id,
@@ -807,6 +816,7 @@ class PostgresMetadataStore(MetadataStore):
                     blob_path,
                     content_sha256,
                     version,
+                    Json(job.correlation),
                 ),
             )
             cur.execute(
@@ -1158,4 +1168,5 @@ def _row_to_job(row) -> Job:
         source_type=row.get("source_type"),
         lease_token=row.get("lease_token"),
         generation_id=row.get("generation_id"),
+        correlation=row.get("correlation"),
     )

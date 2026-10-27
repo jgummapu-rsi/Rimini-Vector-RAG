@@ -12,7 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.shared.container import Container
 from app.shared.domain.models import Principal, Role
-from app.shared.observability import bind
+from app.shared.logger import bind
 
 _bearer = HTTPBearer(auto_error=False, description="Paste your API token (api_token).")
 
@@ -22,6 +22,7 @@ def get_container(request: Request) -> Container:
 
 
 def get_principal(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     container: Container = Depends(get_container),
 ) -> Principal:
@@ -33,6 +34,7 @@ def get_principal(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
 
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id, role=principal.role.value)
+    request.state.principal = principal
     return principal
 
 

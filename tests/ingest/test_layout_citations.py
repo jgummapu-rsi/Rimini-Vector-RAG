@@ -10,6 +10,7 @@ from app.ingest.pipeline.layout import layout_profile
 from app.ingest.pipeline.loaders.pdf import _native_word_regions, extract
 from app.retrieval.rag.provenance import citation_provenance
 from app.retrieval.rag.query import _quote_provenance
+from app.shared.config import Settings
 
 
 def test_native_quote_highlights_only_selected_words_after_chunking():
@@ -17,8 +18,10 @@ def test_native_quote_highlights_only_selected_words_after_chunking():
     document.add_page()
     document.set_font("Helvetica", size=12)
     document.cell(0, 10, "Premium customers receive priority support during business hours.")
-    cfg = SimpleNamespace(max_pdf_pages=5, max_image_pixels=4000000, layout_enabled=False)
-    elements = extract(bytes(document.output()), "source.pdf", None, cfg)
+    cfg = SimpleNamespace(max_pdf_pages=5, max_image_pixels=4000000)
+    elements = extract(
+        bytes(document.output()), "source.pdf", SimpleNamespace(layout=lambda png: []), cfg
+    )
     chunks = chunk_elements(elements)
     assert chunks
     provenance = citation_provenance(chunks[0].meta, "pdf")
@@ -41,11 +44,17 @@ def test_layout_boundaries_do_not_split_same_baseline_words():
     assert [line[0] for line in output] == ["Left Right"]
 
 
-def test_enabled_layout_requires_checkpoint(tmp_path):
+def test_layout_always_requires_checkpoint(tmp_path):
     with pytest.raises(FileNotFoundError, match="checkpoint missing"):
-        layout_profile(
-            SimpleNamespace(layout_enabled=True, layout_model_path=tmp_path / "missing.pt")
-        )
+        layout_profile(SimpleNamespace(layout_model_path=tmp_path / "missing.pt"))
+
+
+def test_legacy_environment_cannot_disable_layout(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAYOUT_ENABLED", "false")
+    cfg = Settings(_env_file=None, layout_model_path=tmp_path / "missing.pt")
+    assert "layout_enabled" not in Settings.model_fields
+    with pytest.raises(FileNotFoundError, match="checkpoint missing"):
+        layout_profile(cfg)
 
 
 def test_scanned_layout_keeps_completeness_and_region_precision():
@@ -65,7 +74,7 @@ def test_scanned_layout_keeps_completeness_and_region_precision():
         def vision(self, image, prompt, mime):
             return "Invoice total 100 USD"
 
-    cfg = SimpleNamespace(max_pdf_pages=5, max_image_pixels=4000000, layout_enabled=True)
+    cfg = SimpleNamespace(max_pdf_pages=5, max_image_pixels=4000000)
     elements = extract(bytes(document.output()), "scan.pdf", Gateway(), cfg)
     assert len(elements) == 1
     provenance = citation_provenance(elements[0].meta, "pdf")

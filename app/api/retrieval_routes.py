@@ -17,7 +17,7 @@ from app.retrieval.rag.query import answer_query, generate_answer_from_chunks, r
 from app.shared.container import Container
 from app.shared.domain.models import Principal
 from app.shared.gateway.client import GatewayError
-from app.shared.observability import bind
+from app.shared.logger import bind
 
 router = APIRouter()
 log = logging.getLogger("api")

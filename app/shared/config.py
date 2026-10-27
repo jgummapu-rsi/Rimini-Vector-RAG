@@ -76,6 +76,8 @@ class Settings(BaseSettings):
         return init_settings, mounted_secrets, env_settings, dotenv_settings, file_secret_settings
 
     app_env: str = "production"
+    otel_exporter_otlp_endpoint: str = ""
+    otel_exporter_otlp_headers: str = ""
 
     data_dir: Path = Path("data")
 
@@ -131,7 +133,6 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
 
     max_pdf_pages: int = 500
-    layout_enabled: bool = False
     layout_model_path: Path = Path(
         "models/doclayout-yolo/doclayout_yolo_docstructbench_imgsz1024.pt"
     )

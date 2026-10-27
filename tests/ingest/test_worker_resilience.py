@@ -94,7 +94,7 @@ def run_worker(monkeypatch):
         container = _Container(queue, _Settings())
         container.slept = []
         monkeypatch.setattr(worker, "build_container", lambda: container)
-        monkeypatch.setattr(worker, "configure_logging", lambda: None)
+        monkeypatch.setattr(worker, "configure_logging", lambda **kwargs: None)
         monkeypatch.setattr(worker.time, "sleep", container.slept.append)
         monkeypatch.setattr(worker, "run_job", run_job or (lambda c, j: None))
         with pytest.raises(_Stop):

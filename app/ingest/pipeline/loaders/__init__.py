@@ -7,6 +7,7 @@ computes a uniform route summary from the produced elements.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections import Counter
 
@@ -15,6 +16,9 @@ from app.ingest.pipeline.loaders import docx_loader, excel, image, markdown, pdf
 from app.ingest.pipeline.safety import UnsafeContentError
 from app.shared.config import Settings
 from app.shared.gateway.client import LiteLLMClient
+from app.shared.logger import stage
+
+log = logging.getLogger(__name__)
 
 _DISPATCH = {
     ".pdf": pdf.extract,
@@ -40,11 +44,15 @@ def extract_document(
     filename: str, data: bytes, gateway: LiteLLMClient, cfg: Settings
 ) -> tuple[list[Element], dict]:
     """Dispatch to the per-extension loader, passing file-safety limits through."""
-    ext = os.path.splitext(filename or "")[1].lower()
-    loader = _DISPATCH.get(ext)
-    if loader is None:
-        raise ValueError(f"no loader for extension '{ext}'")
-    elements = loader(data, filename, gateway, cfg)
+    with stage("routing", logger=log) as detail:
+        ext = os.path.splitext(filename or "")[1].lower()
+        loader = _DISPATCH.get(ext)
+        if loader is None:
+            raise ValueError(f"no loader for extension '{ext}'")
+        detail.update(extension=ext, loader=loader.__module__)
+    with stage("extraction", logger=logging.getLogger(loader.__module__)) as detail:
+        elements = loader(data, filename, gateway, cfg)
+        detail.update(_route_summary(elements))
     for index, element in enumerate(elements):
         element.meta.setdefault("source_element", index)
         element.meta.setdefault(

@@ -21,8 +21,12 @@ RUN pip install --no-cache-dir -r requirements.txt && pip check
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
+# Visual citations are a core feature. Bake the verified layout checkpoint into
+# the image so a fresh `docker compose up --build` needs no setup command.
+RUN python -m scripts.download_doclayout --directory /app/layout-models
+
 RUN groupadd --gid 10001 rag && useradd --uid 10001 --gid rag --home-dir /app rag \
-    && mkdir -p /app/data /app/models && chown -R rag:rag /app/data /app/models
+    && mkdir -p /app/data /app/models && chown -R rag:rag /app/data /app/models /app/layout-models
 
 # Named volumes are initialized from image contents. Persist the runtime user's
 # ownership in the image so a newly created blob volume is writable immediately.

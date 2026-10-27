@@ -660,6 +660,7 @@ dialog.source-dialog::backdrop { background: rgba(22,22,22,.68); }
 .source-pdf-page { position: relative; align-self: center; max-width: 100%; line-height: 0;
                    border: 1px solid var(--gray-3); background: var(--white); box-shadow: var(--shadow); }
 .source-pdf-page img { display: block; max-width: 100%; height: auto; }
+.source-pdf-page.source-image-page { width: fit-content; }
 .source-region { position: absolute; border: 0; background: rgba(255,199,44,.27);
                  box-shadow: inset 0 -2px 0 #e4a400; pointer-events: none; }
 .source-region.first { border-top: 2px solid #e4a400; border-radius: 5px 5px 0 0; }
@@ -702,12 +703,23 @@ dialog.source-dialog::backdrop { background: rgba(22,22,22,.68); }
                         margin-bottom: 14px; }
 .source-fallback-head .grow { flex: 1; min-width: 220px; }
 .source-fallback-head p { margin: 4px 0 0; color: var(--gray-7); }
-.source-chunk { padding: 16px 18px; margin-bottom: 10px; border: 1px solid var(--gray-2);
-                border-radius: var(--radius); background: var(--white); }
-.source-chunk.cited { border-left: 4px solid var(--sol); box-shadow: var(--shadow); }
-.source-chunk .meta { margin: 0 0 8px; }
-.source-chunk pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
-                    font: inherit; color: var(--gray-7); }
+.source-document { width: min(820px, 100%); min-height: 100%; margin: 0 auto; padding: 54px 64px;
+                   border: 1px solid var(--gray-2); background: var(--white); box-shadow: var(--shadow); }
+.source-document h1, .source-document h2, .source-document h3,
+.source-document h4, .source-document h5, .source-document h6 { color: var(--rs-black); line-height: 1.2; }
+.source-document h1 { margin: 0 0 28px; font-size: 30px; }
+.source-document h2 { margin: 32px 0 14px; font-size: 24px; }
+.source-document h3 { margin: 26px 0 12px; font-size: 20px; }
+.source-document h4, .source-document h5, .source-document h6 { margin: 22px 0 10px; font-size: 17px; }
+.source-document p { margin: 0 0 16px; color: var(--gray-7); font-size: 17px; line-height: 1.65;
+                     white-space: pre-wrap; overflow-wrap: anywhere; }
+.source-document .source-item-approximate { margin-left: -14px; padding-left: 11px;
+                                            border-left: 3px solid var(--sol); }
+.source-document .source-table-wrap { margin: 22px 0; overflow-x: auto; }
+.source-document table { width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.45; }
+.source-document th, .source-document td { padding: 10px 12px; border: 1px solid var(--gray-3);
+                                           text-align: left; vertical-align: top; }
+.source-document th { background: var(--gray-1); font-weight: 700; }
 body.modal-open { overflow: hidden; }
 
 @media (max-width: 700px) {
@@ -2304,20 +2316,42 @@ function explainHighlight(host, source) {
 
 function renderStructuredSource(preview, source) {
   const wrapper = document.createElement("div");
+  wrapper.className = "source-document";
   const locator = source.provenance?.locator || {};
+  const quotes = (source.supporting_quotes || [source.supporting_quote || source.snippet]).filter(Boolean);
+  let hasExactSelection = false;
+  for (const block of preview.blocks || []) {
+    if (quotes.some(q => uniqueQuoteRange(block.text, q))) { hasExactSelection = true; break; }
+  }
   for (const block of preview.blocks || []) {
     const loc = block.locator || {};
-    const card = document.createElement("section"); card.className = "source-chunk";
     const sameItem = locator.body_index != null && loc.body_index === locator.body_index;
-    const quotes = source.supporting_quotes || [source.supporting_quote || source.snippet];
     const quoted = quotes.some(q => uniqueQuoteRange(block.text, q));
-    if (sameItem || quoted || (locator.sheet === loc.sheet && locator.row != null && locator.row === loc.row)) {
-      card.classList.add("cited"); card.dataset.selected = "true";
+    const sameRow = locator.sheet === loc.sheet && locator.row != null && locator.row === loc.row;
+    const selected = quoted || (!hasExactSelection && (sameItem || sameRow));
+    let element;
+    if (block.type === "heading") {
+      element = document.createElement(`h${Math.min(6, Math.max(1, Number(block.level) || 2))}`);
+      element.append(...renderSourceText(block.text, quotes).childNodes);
+    } else if (block.type === "table" && Array.isArray(block.rows)) {
+      element = document.createElement("div"); element.className = "source-table-wrap";
+      const table = document.createElement("table");
+      for (const [index, row] of block.rows.entries()) {
+        const tr = document.createElement("tr");
+        for (const cell of row) {
+          const td = document.createElement(index === 0 ? "th" : "td");
+          td.textContent = cell; tr.append(td);
+        }
+        table.append(tr);
+      }
+      element.append(table);
+    } else {
+      element = document.createElement("p");
+      element.append(...renderSourceText(block.text, quotes).childNodes);
     }
-    const label = document.createElement("p"); label.className = "meta";
-    label.textContent = loc.sheet ? `${loc.sheet} · Row ${loc.row}`
-      : loc.body_index ? `Document item ${loc.body_index}` : `Row ${loc.row}`;
-    card.append(label, renderSourceText(block.text, quotes)); wrapper.append(card);
+    if (selected) element.dataset.selected = "true";
+    if (!hasExactSelection && selected) element.classList.add("source-item-approximate");
+    wrapper.append(element);
   }
   return wrapper;
 }
@@ -2358,51 +2392,58 @@ async function renderInlineSource(host, source) {
     }
     const base = `/documents/${encodeURIComponent(source.document_id)}/versions/${source.version}`;
     const ext = String(source.filename || "").split(".").pop().toLowerCase();
+    const declared = String(source.source_type || "").toLowerCase();
+    const provenanceKind = String(source.provenance?.kind || "").toLowerCase();
     const provenance = source.provenance || {};
-    if (ext === "pdf") {
+    const isImage = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff"].includes(ext)
+      || declared === "image" || provenanceKind === "image";
+    const isPdf = ext === "pdf" || declared === "pdf" || provenanceKind === "pdf";
+    if (isPdf || isImage) {
+      const label = isImage ? "Frame" : "Page";
       const pages = [...new Set([...(provenance.pages || []), ...(provenance.regions || []).map(r => r.page)])]
         .filter(p => Number.isInteger(p) && p > 0);
-      if (!pages.length) pages.push(1);
+      if (!pages.length) pages.push(isImage ? Number(provenance.locator?.frame || 1) : 1);
       const controls = document.createElement("div"); controls.className = "source-pages";
       const pageHost = document.createElement("div");
       host.replaceChildren(controls, pageHost);
       let load = 0;
       const show = async page => {
         const sequence = ++load;
-        pageHost.textContent = "Loading page…";
+        pageHost.textContent = `Loading ${label.toLowerCase()}…`;
         try {
-          const blob = await request(`${base}/pages/${page}`, "blob");
+          const blob = await request(`${base}/${isImage ? "frames" : "pages"}/${page}`, "blob");
           if (!live() || sequence !== load) return;
           const frame = document.createElement("div"); frame.className = "source-pdf-page";
-          const image = document.createElement("img"); image.alt = `${source.filename}, page ${page}`;
+          if (isImage) frame.className += " source-image-page";
+          const image = document.createElement("img"); image.alt = `${source.filename}, ${label.toLowerCase()} ${page}`;
+          const imageURL = objectURL(blob);
           image.onload = () => {
-            URL.revokeObjectURL(image.src); urls.delete(image.src);
+            URL.revokeObjectURL(imageURL); urls.delete(imageURL);
             if (!live() || sequence !== load) return;
             const first = passageGroups(provenance.regions || [], page)[0];
             if (first) host.scrollTop = Math.max(0, frame.offsetTop - host.offsetTop + image.clientHeight * first.y - 60);
           };
-          image.src = objectURL(blob);
+          image.onerror = () => {
+            URL.revokeObjectURL(imageURL); urls.delete(imageURL);
+            if (!live() || sequence !== load) return;
+            pageHost.replaceChildren(document.createTextNode(`${label} could not be displayed. Showing cited text. `),
+              renderSourceText(source.snippet || "No cited text is available.", source.supporting_quote));
+          };
+          image.src = imageURL;
           frame.append(image, passageOverlay(provenance.regions || [], page, provenance.selection_status !== "quote", provenance.chunk_regions || []));
           pageHost.replaceChildren(frame);
         } catch (error) {
           if (live() && sequence === load) {
-            pageHost.replaceChildren(document.createTextNode("Page preview unavailable. Showing cited text. "),
-              renderSourceText(source.snippet || "", source.supporting_quote));
+            pageHost.replaceChildren(document.createTextNode(`${label} preview unavailable: ${error.message} Showing cited text. `),
+              renderSourceText(source.snippet || "No cited text is available.", source.supporting_quote));
           }
         }
       };
       for (const page of pages) {
         const button = document.createElement("button"); button.className = "btn btn-sm";
-        button.textContent = `Page ${page}`; button.onclick = () => show(page); controls.append(button);
+        button.textContent = `${label} ${page}`; button.onclick = () => show(page); controls.append(button);
       }
       await show(pages[0]);
-    } else if (["png", "jpg", "jpeg", "webp", "tif", "tiff"].includes(ext)) {
-      const frame = Number(provenance.locator?.frame || 1);
-      const blob = await request(`${base}/frames/${frame}`, "blob");
-      if (!live()) return;
-      const image = document.createElement("img"); image.className = "source-image";
-      image.alt = `${source.filename}, frame ${frame}`; image.src = objectURL(blob);
-      host.replaceChildren(image);
     } else {
       const preview = await request(`${base}/preview`);
       if (!live()) return;
@@ -2420,8 +2461,8 @@ async function renderInlineSource(host, source) {
   } catch (error) {
     if (live()) {
       const note = document.createElement("p"); note.className = "source-note";
-      note.textContent = "Original preview unavailable. Showing the cited extracted passage.";
-      host.replaceChildren(note, renderSourceText(source.snippet || "", source.supporting_quote));
+      note.textContent = `Original preview unavailable: ${error.message} Showing the cited extracted passage.`;
+      host.replaceChildren(note, renderSourceText(source.snippet || "No cited text is available.", source.supporting_quote));
     }
   }
 }

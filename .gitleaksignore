@@ -1,0 +1,13 @@
+# Reviewed false positives from the vendored Docling commit on feat/docling.
+# CI fetches all branches, so the full-history scan includes this commit.
+# Scope each exception to its exact commit, path, rule, and line.
+# The seven UPSTREAM.json values were verified against SHA-256 of the source files.
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:34
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:35
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:36
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:131
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:138
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:188
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/UPSTREAM.json:generic-api-key:212
+# Model inference arguments: image_tensor, self.tokenizer, max_length=512.
+b887e2e6fac1dd2f7fca1806e1d3f4c14217677d:vendor/docling/docling/models/stages/table_structure/table_structure_model_v2.py:generic-api-key:462

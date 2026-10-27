@@ -45,4 +45,4 @@ def test_production_profile_uses_mounted_secrets_and_preprovisioned_storage():
     assert "--ssl-keyfile" in api["command"]
     assert api["healthcheck"]["test"] == ["CMD", "python", "-m", "scripts.tls_healthcheck"]
     for name in ("api", "worker", "postgres", "redis"):
-        assert services[name]["profiles"] == ["development"]
+        assert "profiles" not in services[name]

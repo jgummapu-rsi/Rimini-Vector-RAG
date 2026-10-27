@@ -18,8 +18,6 @@ _INFERENCE_LOCK = Lock()
 
 
 def layout_profile(cfg) -> dict:
-    if not getattr(cfg, "layout_enabled", False):
-        return {"enabled": False}
     path = Path(cfg.layout_model_path).resolve()
     if not path.is_file():
         raise FileNotFoundError(
@@ -60,8 +58,6 @@ def detect_layout(image_bytes: bytes, cfg) -> list[dict]:
     """Return top-left normalized boxes in the original rendered image space."""
 
     profile = layout_profile(cfg)
-    if not profile["enabled"]:
-        return []
     with Image.open(io.BytesIO(image_bytes)) as image:
         if image.width * image.height > cfg.max_image_pixels:
             raise ValueError("Layout page exceeds pixel limit")

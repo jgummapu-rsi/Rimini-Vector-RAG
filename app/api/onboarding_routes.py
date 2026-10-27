@@ -78,8 +78,8 @@ class RegisterRequest(BaseModel):
     email: str = Field(..., max_length=320)
     password: str = Field(..., min_length=8, max_length=200)
     display_name: str | None = Field(default=None, max_length=200)
-    chat_model: str | None = Field(default=None, max_length=128)
-    embedding_model: str | None = Field(default=None, max_length=128)
+    chat_model: str = Field(..., min_length=1, max_length=128)
+    embedding_model: str = Field(..., min_length=1, max_length=128)
 
 
 class LoginRequest(BaseModel):
@@ -193,6 +193,10 @@ class GatewayConfigRequest(BaseModel):
     api_key: str = Field(..., max_length=500)
 
 
+class GatewaySetupRequest(GatewayConfigRequest):
+    pass
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(
     req: RegisterRequest,
@@ -210,39 +214,30 @@ def register(
     if container.metadata.get_user_by_email(email) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "an account with this email already exists")
 
-    chat_model = req.chat_model or container.settings.chat_model
-    embedding_model = req.embedding_model or container.settings.embedding_model
-    if req.chat_model is not None or req.embedding_model is not None:
-        catalog = model_options(container)
-        if chat_model not in {item["id"] for item in catalog["chat_models"]}:
-            raise HTTPException(400, "Select an available non-Claude chat model")
-        if embedding_model not in {item["id"] for item in catalog["embedding_models"]}:
-            raise HTTPException(400, "Select an available embedding model")
+    chat_model = req.chat_model
+    embedding_model = req.embedding_model
+    catalog = model_options(container)
+    if chat_model not in {item["id"] for item in catalog["chat_models"]}:
+        raise HTTPException(400, "Select an available non-Claude chat model")
+    if embedding_model not in {item["id"] for item in catalog["embedding_models"]}:
+        raise HTTPException(400, "Select an available embedding model")
 
     tenant_name = (req.display_name or email.split("@")[0]).strip()[:200] or email
     token = "sk-" + secrets.token_urlsafe(24)
-    selected_models = req.chat_model is not None or req.embedding_model is not None
     try:
-        if selected_models:
-            tenant_id, user_id = container.metadata.create_workspace_with_models(
-                tenant_name, email, token, _hash_password(req.password), chat_model, embedding_model
-            )
-        else:
-            tenant_id = container.metadata.create_tenant(tenant_name)
-            user_id = container.metadata.create_user_with_password(
-                tenant_id, email, Role.ADMIN.value, token, _hash_password(req.password)
-            )
+        tenant_id, user_id = container.metadata.create_workspace_with_models(
+            tenant_name, email, token, _hash_password(req.password), chat_model, embedding_model
+        )
     except EmailAlreadyRegistered:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "an account with this email already exists"
         ) from None
 
-    if selected_models:
-        if container.workspace_runtime and not (
-            embedding_model == container.settings.embedding_model
-            and container.settings.embedding_provider == "gateway"
-        ):
-            container.workspace_runtime.prepare(embedding_model)
+    if container.workspace_runtime and not (
+        embedding_model == container.settings.embedding_model
+        and container.settings.embedding_provider == "gateway"
+    ):
+        container.workspace_runtime.prepare(embedding_model)
 
     container.metadata.write_audit(
         tenant_id, user_id, "onboarding_register", tenant_id, {"email": email}
@@ -263,6 +258,46 @@ def model_options(container: Container = Depends(get_container)) -> dict:
         "default_chat_model": container.settings.chat_model,
         "default_embedding_model": container.settings.embedding_model,
     }
+
+
+def _valid_gateway_origin(base_url: str, container: Container) -> str:
+    parsed = urlsplit(base_url.strip().rstrip("/"))
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    allowed = container.settings.gateway_allowed_origins
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path
+        or (allowed and origin not in allowed)
+        or (parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"})
+    ):
+        raise HTTPException(400, "Enter an allowed HTTPS LiteLLM origin without a path")
+    return origin
+
+
+@router.post("/setup-gateway")
+def setup_gateway(req: GatewaySetupRequest, container: Container = Depends(get_container)) -> dict:
+    """One-time first-run setup. Disabled permanently after the first account exists."""
+    if (
+        container.metadata.has_registered_users()
+        or container.metadata.get_gateway_config() is not None
+    ):
+        raise HTTPException(403, "Gateway setup is available only before the first registration")
+    base_url = _valid_gateway_origin(req.base_url, container)
+    api_key = req.api_key.strip()
+    if not api_key:
+        raise HTTPException(400, "Enter a LiteLLM API key")
+    try:
+        catalog = container.model_catalog.fetch(base_url, api_key)
+    except GatewayError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not catalog["chat_models"]:
+        raise HTTPException(400, "The LiteLLM gateway has no compatible chat models")
+    container.metadata.set_gateway_config(base_url, api_key)
+    return {**catalog, "default_chat_model": None, "default_embedding_model": None}
 
 
 @router.post("/login")
@@ -328,22 +363,13 @@ def gateway_config(
     for this call works end to end with no extra step."""
     base_url = req.base_url.strip().rstrip("/")
     api_key = req.api_key.strip()
-    parsed = urlsplit(base_url)
-    origin = f"{parsed.scheme}://{parsed.netloc}"
-    if (
-        parsed.scheme != "https"
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path
-        or origin not in container.settings.gateway_allowed_origins
-        or not api_key
-    ):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "gateway requires an allowed HTTPS origin and a nonempty key",
-        )
+    _valid_gateway_origin(base_url, container)
+    if not api_key:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "gateway requires a nonempty key")
+    try:
+        container.model_catalog.fetch(base_url, api_key)
+    except GatewayError as exc:
+        raise HTTPException(400, str(exc)) from exc
     container.metadata.set_gateway_config(base_url, api_key)
     container.metadata.write_audit(
         principal.tenant_id, principal.user_id, "gateway_config_updated", "system_config", {}

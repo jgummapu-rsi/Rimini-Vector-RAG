@@ -2,7 +2,7 @@
 
 Run:  python -m app.ingest.worker
 Restart-safe: job state lives in the metadata store, so a crash mid-job just
-leaves the row claimable/retryable. Emits structured JSON logs and records
+leaves the row claimable/retryable. Emits readable text logs and records
 metrics.
 
 The loop's contract is that it does not exit. Three things can fail and none of
@@ -23,8 +23,9 @@ import time
 from app.ingest.pipeline.runner import run_job
 from app.ingest.pipeline.safety import UnsafeContentError
 from app.ingest.ports.task_queue import RETRY_MAX_SECONDS, StaleLeaseError, retry_delay_seconds
+from app.shared.config import settings
 from app.shared.container import build_container
-from app.shared.observability import configure_logging, log_context
+from app.shared.logger import configure_logging, log_context, shutdown_logging
 
 log = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ def _handle_job_failure(container, job, exc: Exception, max_attempts: int) -> No
 
 
 def main() -> None:
-    configure_logging()
+    configure_logging(settings=settings, service_name="rimini-rag-worker")
     container = build_container()
     stopped = threading.Event()
     previous = {}
@@ -115,6 +116,7 @@ def main() -> None:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
         container.close()
+        shutdown_logging()
 
 
 def _poll(container, stopped) -> None:
@@ -159,11 +161,14 @@ def _poll(container, stopped) -> None:
             time.sleep(cfg.worker_poll_seconds)
             continue
 
-        with log_context(
-            job_id=job.id,
-            document_id=job.document_id,
-            tenant_id=job.tenant_id,
-            attempt=job.attempts,
+        with (
+            log_context(**(job.correlation or {})),
+            log_context(
+                job_id=job.id,
+                document_id=job.document_id,
+                tenant_id=job.tenant_id,
+                attempt=job.attempts,
+            ),
         ):
             log.info("claimed job", extra={"event": "claim"})
             try:

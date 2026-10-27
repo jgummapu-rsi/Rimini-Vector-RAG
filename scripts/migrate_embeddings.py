@@ -9,7 +9,7 @@ from app.shared.adapters.pgvector.migration import activate_shadow, build_shadow
 from app.shared.adapters.postgres.metadata_store import PostgresMetadataStore
 from app.shared.config import settings
 from app.shared.gateway.client import LiteLLMClient
-from app.shared.observability import configure_logging
+from app.shared.logger import configure_logging
 
 log = logging.getLogger(__name__)
 

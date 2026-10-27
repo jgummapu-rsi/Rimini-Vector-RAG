@@ -21,7 +21,6 @@ from app.shared.config import Settings
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("document_id")
-    parser.add_argument("--native-only", action="store_true")
     parser.add_argument("--text", action="store_true")
     args = parser.parse_args()
     cfg = Settings()
@@ -36,9 +35,6 @@ def main():
             (args.document_id,),
         )
         before, before_tiny = cur.fetchone()
-    if args.native_only:
-        cfg = cfg.model_copy(update={"layout_enabled": False})
-
     class NoVision:
         def vision(self, *args, **kwargs):
             raise RuntimeError("This read-only audit does not call vision models")

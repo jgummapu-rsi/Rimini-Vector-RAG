@@ -5,6 +5,7 @@ import pytest
 from PIL import Image
 
 from app.api import ingest_routes
+from app.ingest.pipeline.loaders.image import extract
 from tests.conftest import _docx_bytes, _xlsx_bytes
 
 
@@ -40,7 +41,12 @@ def test_docx_preview_retains_body_anchors(monkeypatch):
     result = ingest_routes.preview_document_version("doc", 1, None, container)
     assert result["blocks"][0]["locator"] == {"body_index": 1}
     assert "Annual Report" in result["blocks"][0]["text"]
-    assert any("APAC" in block["text"] for block in result["blocks"])
+    assert result["blocks"][0]["type"] == "heading"
+    assert result["blocks"][0]["level"] == 1
+    assert result["blocks"][1]["type"] == "paragraph"
+    table = next(block for block in result["blocks"] if block["type"] == "table")
+    assert table["rows"][0] == ["Region", "Revenue", "Growth"]
+    assert table["rows"][1] == ["APAC", "120", "18%"]
 
 
 def test_spreadsheet_preview_retains_sheet_and_rows(monkeypatch):
@@ -68,3 +74,23 @@ def test_tiff_renders_requested_frame(monkeypatch):
     with pytest.raises(ingest_routes.HTTPException) as error:
         ingest_routes.render_image_frame("doc", 1, 3, None, container)
     assert error.value.status_code == 404
+
+
+def test_image_preview_uses_same_orientation_as_extraction(monkeypatch):
+    buffer = io.BytesIO()
+    with Image.new("RGB", (40, 20), "red") as image:
+        exif = image.getexif()
+        exif[274] = 6
+        image.save(buffer, "PNG", exif=exif)
+    data = buffer.getvalue()
+    container = source(monkeypatch, "rotated.png", data)
+    elements = extract(
+        data,
+        "rotated.png",
+        SimpleNamespace(vision=lambda *args: "Rotated text", layout=lambda *args: []),
+        SimpleNamespace(max_pdf_pages=5, max_image_pixels=100000),
+    )
+    response = ingest_routes.render_image_frame("doc", 1, 1, None, container)
+    with Image.open(io.BytesIO(response.body)) as preview:
+        assert preview.size == (20, 40)
+        assert preview.size == (elements[0].meta["page_width"], elements[0].meta["page_height"])

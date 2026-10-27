@@ -269,6 +269,7 @@ class Job:
     source_type: str | None = None
     lease_token: str | None = None
     generation_id: str | None = None
+    correlation: dict[str, Any] | None = None
 
 
 class JobEventStatus(str, Enum):

@@ -24,6 +24,7 @@ from app.shared.gateway.client import GatewayError, LiteLLMClient
 class _Response:
     def __init__(self, status_code: int, payload: dict | None = None, text: str = ""):
         self.status_code = status_code
+        self.headers = {}
         self._payload = payload or {}
         self.text = text or f"status {status_code}"
 
