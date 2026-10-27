@@ -76,7 +76,7 @@ ruff==0.16.6
 # Layout inference (CPU wheels; no CUDA runtime download).
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.7.1+cpu
-torchvision==0.22.1+cpu
+torchvision==0.22.1
 doclayout-yolo==0.0.4
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86

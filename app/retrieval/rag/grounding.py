@@ -88,10 +88,17 @@ def pack_evidence(
     question: str, contexts: list[str], model: str, citations: list[dict] | None = None
 ) -> tuple[list[dict], list[int]]:
     if model.startswith(("gpt-", "o1", "o3", "o4")):
-        encoding = tiktoken.get_encoding("o200k_base")
+        try:
+            encoding = tiktoken.get_encoding("o200k_base")
 
-        def count(value):
-            return len(encoding.encode(value, disallowed_special=()))
+            def count(value):
+                return len(encoding.encode(value, disallowed_special=()))
+
+        except Exception:
+            log.warning("o200k tokenizer unavailable; using approximate token counting")
+
+            def count(value):
+                return max(1, (len(value) + 3) // 4)
     else:
 
         def count(value):

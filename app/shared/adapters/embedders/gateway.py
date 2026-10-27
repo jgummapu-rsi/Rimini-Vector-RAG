@@ -27,9 +27,14 @@ class GatewayEmbedder(Embedder):
             raise ValueError("Unsupported gateway embedding model or dimension")
         if model == "text-embedding-ada-002" and dim != 1536:
             raise ValueError("Ada embeddings do not support reduced dimensions")
-        self._tokenizer = tiktoken.get_encoding("cl100k_base")
+        try:
+            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+            tokenizer_id = "cl100k_base:tiktoken-0.8.0"
+        except Exception:
+            self._tokenizer = None
+            tokenizer_id = "approx-char-4"
         self._profile = EmbeddingProfile(
-            "gateway", model, revision, "cl100k_base:tiktoken-0.8.0", dim, 8191, "provider", True
+            "gateway", model, revision, tokenizer_id, dim, 8191, "provider", True
         )
 
     @property
@@ -41,7 +46,9 @@ class GatewayEmbedder(Embedder):
         return self.profile.max_tokens
 
     def count_tokens(self, text: str) -> int:
-        return len(self._tokenizer.encode(text, disallowed_special=()))
+        if self._tokenizer is not None:
+            return len(self._tokenizer.encode(text, disallowed_special=()))
+        return max(1, (len(text) + 3) // 4)
 
     @property
     def dim(self) -> int:

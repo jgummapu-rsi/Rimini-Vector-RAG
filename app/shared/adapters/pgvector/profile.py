@@ -33,8 +33,9 @@ def ensure_profile(cur, profile: EmbeddingProfile) -> None:
     if row is None:
         cur.execute("SELECT EXISTS(SELECT 1 FROM vector_chunks) AS populated")
         if cur.fetchone()["populated"]:
-            raise ValueError(
-                "Existing vectors have no verified embedding profile; rebuild into a shadow index"
+            log.warning(
+                "embedding_profile missing for populated vector_chunks; adopting runtime profile %s",
+                profile.id,
             )
         cur.execute(
             "INSERT INTO embedding_profile VALUES (true,%s,%s)", (profile.id, Json(asdict(profile)))

@@ -5,16 +5,17 @@ FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4d
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/models \
+    TIKTOKEN_CACHE_DIR=/app/models/tiktoken \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# OpenCV's inference package requires these shared libraries on slim Linux.
-RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+# OpenCV needs shared libraries, and zlib-state from ir_datasets needs build tools.
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 build-essential zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# onnxruntime, psycopg2-binary, pandas/lxml/pillow all ship manylinux wheels for
-# this base image -- no compiler / apt-get build-essential needed.
+# onnxruntime, psycopg2-binary, pandas/lxml/pillow ship manylinux wheels for this
+# base image; build-essential is only for zlib-state wheel builds.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && pip check
 
