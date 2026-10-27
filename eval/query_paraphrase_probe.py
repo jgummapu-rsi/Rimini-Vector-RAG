@@ -61,7 +61,7 @@ def main(settings) -> None:
 
     container = build_container(settings)
     tid = container.metadata.create_tenant(
-        "paraphrase-probe-" + hashlib.sha1(str(corpus).encode()).hexdigest()[:8]
+        "paraphrase-probe-" + hashlib.sha256(str(corpus).encode()).hexdigest()[:16]
     )
     uid = container.metadata.create_user(
         tid, "probe@x.test", Role.ADMIN.value, "sk-" + new_object_id()

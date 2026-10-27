@@ -40,10 +40,12 @@ from app.retrieval.rag.results import QueryResult as QueryResult
 from app.retrieval.rag.results import RetrievalResult as RetrievalResult
 from app.shared.container import Container
 from app.shared.execution import check_execution
+from app.shared.logger import measured, stage
 
 log = logging.getLogger(__name__)
 
 
+@measured("cache_lookup")
 def _cache_get(container, tenant_id, user_id, vector, model):
     check_execution()
     try:
@@ -56,6 +58,7 @@ def _cache_get(container, tenant_id, user_id, vector, model):
         return None
 
 
+@measured("cache_store")
 def _cache_put(container, tenant_id, user_id, question, vector, model, payload):
     check_execution()
     try:
@@ -92,10 +95,14 @@ def _retrieve(
     precomputed embedding (the answer cache needs it up front) reused here to
     avoid embedding the question twice."""
     if qvec is None:
-        qvec = container.embedder.embed_query(question)
-    return container.vectors.search(
-        tenant_id, qvec, top_k=_fetch_k(container, top_k), access=access, query_text=question
-    )
+        with stage("query_embedding", logger=log):
+            qvec = container.embedder.embed_query(question)
+    with stage("hybrid_search", logger=log) as detail:
+        hits = container.vectors.search(
+            tenant_id, qvec, top_k=_fetch_k(container, top_k), access=access, query_text=question
+        )
+        detail["candidates"] = len(hits)
+        return hits
 
 
 _CACHED_FIELDS = (
@@ -130,6 +137,7 @@ def _result_to_payload(result: QueryResult) -> dict:
 def _result_from_cache(payload: dict, similarity: float) -> QueryResult:
     """Rebuild a QueryResult from a cached payload, prefixing the trace with a
     cache-hit marker while preserving the trace of how the answer was first built."""
+    log.info("answer cache hit", extra={"event": "cache_hit", "similarity": similarity})
     trace = [
         {"stage": "cache", "detail": f"served from semantic cache (similarity {similarity:.3f})"}
     ]
@@ -216,6 +224,7 @@ def _retrieve_decomposed(
     ]
 
 
+@measured("reranking")
 def _rerank(
     container: Container,
     question: str,
@@ -261,6 +270,7 @@ def _rerank(
     return [hits[i] for i in order], [scores[i] for i in order]
 
 
+@measured("retrieval", pipeline=True)
 def retrieve_chunks(
     container: Container,
     tenant_id: str,
@@ -281,8 +291,10 @@ def retrieve_chunks(
     trace: list[dict] = []
 
     sub_questions: list[str] = []
-    if looks_multi_part(question):
-        sub_questions = decompose_question(container.gateway, resolved_model, question)
+    with stage("query_routing", logger=log) as detail:
+        if looks_multi_part(question):
+            sub_questions = decompose_question(container.gateway, resolved_model, question)
+        detail["sub_questions"] = len(sub_questions)
     trace.append(
         {
             "stage": "decompose",
@@ -430,6 +442,7 @@ def retrieve_chunks(
     )
 
 
+@measured("answer_generation", pipeline=True)
 def generate_answer_from_chunks(
     container: Container,
     tenant_id: str,
@@ -509,7 +522,8 @@ def generate_answer_from_chunks(
         )
 
     if qvec is None:
-        qvec = container.embedder.embed_query(question)
+        with stage("query_embedding", logger=log):
+            qvec = container.embedder.embed_query(question)
     use_cache = (
         cache_allowed
         and getattr(access, "document_ids", None) is None
@@ -920,6 +934,7 @@ def _quotes_provenance(provenance: dict, quotes: list[str]) -> dict:
     )
 
 
+@measured("retrieval", pipeline=True)
 def answer_query(
     container: Container,
     tenant_id: str,
@@ -941,7 +956,8 @@ def answer_query(
     caller can do the two steps separately with their own LLM in between."""
     resolved_model = model or container.settings.chat_model
 
-    qvec = container.embedder.embed_query(question)
+    with stage("query_embedding", logger=log):
+        qvec = container.embedder.embed_query(question)
     corpus_epoch = container.metadata.corpus_epoch(tenant_id)
     # Scoped/tuned requests cannot reuse or populate the default answer cache.
     # Even use_cache=True cannot override this: its key does not encode these controls.
@@ -981,7 +997,9 @@ def answer_query(
         enforce_min_score=enforce_min_score,
         rerank_min_score=rerank_min_score,
     )
-    retrieval = expand_evidence(container, tenant_id, retrieval, access)
+    with stage("context_expansion", logger=log) as detail:
+        retrieval = expand_evidence(container, tenant_id, retrieval, access)
+        detail["chunks"] = len(retrieval.chunk_ids)
     result = generate_answer_from_chunks(
         container,
         tenant_id,

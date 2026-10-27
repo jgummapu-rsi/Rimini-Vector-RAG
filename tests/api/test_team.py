@@ -99,7 +99,7 @@ def test_duplicate_email_does_not_move_or_modify_account(client, container, tena
     assert member.role == "viewer"
 
 
-def test_workspace_identity_respects_role(client, tenant):
+def test_workspace_identity_respects_role(client, container, tenant):
     for role in ("admin", "member", "viewer"):
         response = client.get("/onboarding/me", headers=auth(tenant[f"{role}_token"]))
         assert response.status_code == 200
@@ -111,6 +111,8 @@ def test_workspace_identity_respects_role(client, tenant):
             "can_ingest": role != "viewer",
             "configure_gateway": False,
             "publish_global": False,
+            "chat_model": container.settings.chat_model,
+            "embedding_model": container.settings.embedding_model,
         }
 
 

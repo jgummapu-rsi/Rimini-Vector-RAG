@@ -57,6 +57,26 @@ assert.equal(quoteRange('Same quote. Same quote.', 'Same quote.'), null);
 assert.equal(quoteRange('Actual source text', 'Invented quote'), null);
 assert.equal(quoteRange('Actual source text', ''), null);
 console.log('Citation quote matching: original offsets, whitespace, ambiguity, and missing quotes passed');
+
+const documentElement = tag => ({tag, children: [], attrs: {}, dataset: {}, classList: {values: [], add(value) { this.values.push(value); }},
+  append(...children) { this.children.push(...children); }});
+const documentContext = vm.createContext({document: {createElement: documentElement}});
+documentContext.uniqueQuoteRange = context.uniqueQuoteRange;
+documentContext.renderSourceText = text => ({childNodes: [{textContent: text}]});
+vm.runInContext(html.slice(html.indexOf('function renderStructuredSource('), html.indexOf('function renderLocatedText(')), documentContext);
+const page = documentContext.renderStructuredSource({blocks: [
+  {type: 'heading', level: 1, text: 'Plan', locator: {body_index: 1}},
+  {type: 'paragraph', text: 'Phase 1 delivery', locator: {body_index: 2}},
+  {type: 'table', text: 'Owner\tDate', rows: [['Owner', 'Date'], ['Kim', 'June']], locator: {body_index: 3}},
+]}, {supporting_quote: 'Phase 1 delivery', provenance: {locator: {body_index: 2}}});
+assert.equal(page.attrs.class, undefined);
+assert.equal(page.className, 'source-document');
+assert.equal(page.children[0].tag, 'h1');
+assert.equal(page.children[1].tag, 'p');
+assert.equal(page.children[1].dataset.selected, 'true');
+assert.equal(page.children[2].children[0].children[0].children[0].tag, 'th');
+assert(!JSON.stringify(page).includes('Document item'));
+console.log('DOCX preview: document layout, heading, paragraph, table and citation selection passed');
 const citationContext = vm.createContext({esc: text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')});
 vm.runInContext(html.slice(html.indexOf('function answerWithCitations('), html.indexOf('function renderAskDetail(')), citationContext);
 const rendered = citationContext.answerWithCitations('Use [encrypt]. Sources [2] [17] [2]. <img src=x> [99]',
@@ -78,3 +98,54 @@ assert.equal(citationContext.citationForOccurrence(bound, 2).provenance.regions[
 assert.equal(citationContext.citationForOccurrence(bound, 3).provenance.regions.length, 0);
 assert.equal(citationContext.citationForOccurrence({...bound, occurrences: []}, 1).supporting_quote, '');
 console.log('Inline citation links: ID mapping, repeats, literal brackets, and escaping passed');
+
+// Exercise the real async viewer with image frames, including navigation and
+// legacy citations without geometry. Coordinates must use the displayed frame.
+async function imagePreviewTests() {
+  const element = tag => ({tag, children: [], attrs: {}, isConnected: true,
+    setAttribute(name, value) { this.attrs[name] = value; },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; }});
+  const requests = [];
+  const viewer = vm.createContext({
+    AbortController,
+    URL: {createObjectURL: () => 'blob:test', revokeObjectURL() {}},
+    document: {createElement: element, createElementNS: (_, tag) => element(tag),
+      createTextNode: text => ({text})},
+    api: async (path, options) => { requests.push(path); return {}; },
+    renderSourceText: text => ({children: [{textContent: text}]}),
+    inlineSourceCleanup() {},
+  });
+  vm.runInContext(html.slice(html.indexOf('function passageGroups('), html.indexOf('function renderSourceText(')), viewer);
+  vm.runInContext(html.slice(html.indexOf('async function renderInlineSource('), html.indexOf('function answerWithCitations(')), viewer);
+  const host = element('div');
+  const source = {document_id: 'doc', version: 2, filename: 'scan.tiff', provenance: {
+    locator: {frame: 2}, pages: [2, 3], selection_status: 'region',
+    regions: [{...line(.1, .2, .4), page: 2, precision: 'element_region'},
+      {...line(.2, .4, .3), page: 3, precision: 'element_region'}],
+  }};
+  await viewer.renderInlineSource(host, source);
+  assert.equal(requests[0], '/documents/doc/versions/2/frames/2');
+  const [controls, pageHost] = host.children;
+  assert.equal(controls.children[0].textContent, 'Frame 2');
+  assert.equal(pageHost.children[0].children[0].alt, 'scan.tiff, frame 2');
+  assert.equal(pageHost.children[0].children[1].children.length, 1);
+  assert.equal(pageHost.children[0].children[1].children[0].attrs.x, 99.5);
+  assert(pageHost.children[0].children[1].attrs.class.includes('approximate'));
+  await controls.children[1].onclick();
+  assert.equal(requests[1], '/documents/doc/versions/2/frames/3');
+  assert.equal(pageHost.children[0].children[1].children[0].attrs.x, 199.5);
+  await viewer.renderInlineSource(host, {...source, provenance: {locator: {frame: 4}}});
+  assert.equal(requests[2], '/documents/doc/versions/2/frames/4');
+  assert.equal(host.children[1].children[0].children[1].children.length, 0);
+  await viewer.renderInlineSource(host, {...source, filename: '', source_type: 'image',
+    provenance: {kind: 'image', locator: {frame: 5}}});
+  assert.equal(requests[3], '/documents/doc/versions/2/frames/5');
+
+  const image = host.children[1].children[0].children[0];
+  image.onerror();
+  assert.equal(host.children[1].children[0].text, 'Frame could not be displayed. Showing cited text. ');
+  assert.equal(host.children[1].children[1].children[0].textContent, 'No cited text is available.');
+  console.log('Image previews: versioned frames, overlays, navigation and legacy citations passed');
+}
+imagePreviewTests().catch(error => { console.error(error); process.exitCode = 1; });

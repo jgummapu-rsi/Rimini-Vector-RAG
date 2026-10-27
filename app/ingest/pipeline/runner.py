@@ -24,6 +24,8 @@ from app.shared.domain.models import (
     Scope,
     finalize_chunks,
 )
+from app.shared.logger import log_context
+from app.shared.logger import stage as timed_stage
 from app.shared.ports.vector_store import VectorPoint
 
 log = logging.getLogger(__name__)
@@ -41,12 +43,25 @@ STAGES = [
 
 
 def run_job(container: Container, job: Job) -> None:
-    with renewed_lease(container.queue, job, container.settings.job_lease_seconds) as check:
-        container = container.for_workspace(job.tenant_id)
-        _run_claimed_job(container, job, check)
+    with (
+        log_context(**(job.correlation or {})),
+        timed_stage(
+            "ingestion",
+            pipeline=True,
+            parent=job.correlation,
+            job_id=job.id,
+            document_id=job.document_id,
+            tenant_id=job.tenant_id,
+            generation_id=job.generation_id,
+            attempt=job.attempts,
+        ) as detail,
+    ):
+        with renewed_lease(container.queue, job, container.settings.job_lease_seconds) as check:
+            container = container.for_workspace(job.tenant_id)
+            detail.update(_run_claimed_job(container, job, check))
 
 
-def _run_claimed_job(container: Container, job: Job, check) -> None:
+def _run_claimed_job(container: Container, job: Job, check) -> dict:
     """Run one claimed job through all stages. Raises on failure (worker handles)."""
     doc = container.metadata.get_document(job.tenant_id, job.document_id)
     if doc is None:
@@ -92,7 +107,12 @@ def _run_claimed_job(container: Container, job: Job, check) -> None:
         container.queue.set_stage(job.id, stage.value, job.lease_token)
         t0 = time.perf_counter()
         try:
-            _HANDLERS[stage](container, job, ctx)
+            if stage in {JobStage.ROUTE, JobStage.EXTRACT, JobStage.BINARIZE}:
+                _HANDLERS[stage](container, job, ctx)
+            else:
+                with timed_stage(stage.value, logger=log) as detail:
+                    _HANDLERS[stage](container, job, ctx)
+                    detail.update(_stage_detail(stage, ctx))
         except Exception as exc:
             _record_event(
                 container,
@@ -128,17 +148,12 @@ def _run_claimed_job(container: Container, job: Job, check) -> None:
         )
     total_ms = (time.perf_counter() - t_job) * 1000
     _metric(container, "jobs.done", total_ms)
-    log.info(
-        "job done",
-        extra={
-            "event": "job_done",
-            "file": doc.filename,
-            "elements": len(ctx["elements"]),
-            "chunks": len(ctx["chunks"]),
-            "vectors": len(ctx.get("points", [])),
-            "duration_ms": round(total_ms, 1),
-        },
-    )
+    return {
+        "file": doc.filename,
+        "elements": len(ctx["elements"]),
+        "chunks": len(ctx["chunks"]),
+        "vectors": len(ctx.get("points", [])),
+    }
 
 
 def _metric(container, name, duration_ms):
@@ -237,6 +252,9 @@ def _stage_detail(stage: JobStage, ctx: dict) -> dict:
             "elements": len(ctx.get("elements", [])),
             "by_modality": rs.get("by_modality"),
             "by_extractor": rs.get("by_extractor"),
+            "extraction_reused": rs.get("extraction_reused", False),
+            "vision_calls": rs.get("vision_calls", 0),
+            "vision_reused": rs.get("vision_reused", 0),
         }
     if stage == JobStage.CHUNK:
         chunks = ctx.get("chunks", [])

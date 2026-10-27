@@ -31,6 +31,11 @@ class IngestionConflict(ValueError):
 
 
 class MetadataStore(ABC):
+    @abstractmethod
+    def has_registered_users(self) -> bool:
+        """Whether any password-backed onboarding account already exists."""
+        raise NotImplementedError
+
     def create_workspace_with_models(
         self,
         name: str,

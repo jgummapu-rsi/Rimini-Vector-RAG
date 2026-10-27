@@ -178,6 +178,7 @@ ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS filename TEXT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS source_type TEXT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS lease_token TEXT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS generation_id TEXT;
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS correlation JSONB;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS active_generation_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS indexed_version INTEGER;
 

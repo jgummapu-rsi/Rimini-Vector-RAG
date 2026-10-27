@@ -19,10 +19,11 @@ from app.ingest.pipeline.elements import Element
 from app.ingest.pipeline.layout import detect_layout, layout_profile
 from app.ingest.pipeline.loaders import extract_document
 from app.ingest.pipeline.safety import UnsafeContentError, check_archive_expansion
+from app.shared.logger import configure_child_logging, stage
 
 log = logging.getLogger(__name__)
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
-PARSER_REVISION = "structure-reading-order-v5"
+PARSER_REVISION = "image-layout-citations-v6"
 
 
 def _transfer(connection, data: bytes | None, size: int, deadline: float | None) -> bytes:
@@ -125,6 +126,7 @@ async def _vision_with_lease(
 
 
 def _native_child(connection, filename: str, data: bytes, config: dict) -> None:
+    configure_child_logging(lambda message: _send(connection, message))
     try:
         cfg = SimpleNamespace(**config)
         ceiling = cfg.parse_memory_mb * 1024 * 1024
@@ -221,7 +223,6 @@ def extract_bounded(
             "max_workbook_sheets",
         )
     }
-    native_config["layout_enabled"] = profile["enabled"]
     process = context.Process(target=_native_child, args=(child, filename, data, native_config))
     started = time.monotonic()
     try:
@@ -254,6 +255,10 @@ def extract_bounded(
                     "Native parser returned an invalid or incomplete result"
                 ) from exc
             kind = message.get("kind")
+            if kind == "log":
+                record = logging.makeLogRecord(message["record"])
+                logging.getLogger(record.name).handle(record)
+                continue
             if kind == "error":
                 raise UnsafeContentError(f"Native parsing failed ({message['error_type']})")
             if kind == "result":
@@ -275,7 +280,9 @@ def extract_bounded(
                     ).encode()
                 ).hexdigest()
                 cached = load_artifact(key)
-                regions = cached["regions"] if cached is not None else detect_layout(image, cfg)
+                with stage("layout", logger=log) as detail:
+                    regions = cached["regions"] if cached is not None else detect_layout(image, cfg)
+                    detail.update(regions=len(regions), reused=cached is not None)
                 if check_lease is not None:
                     check_lease()
                 if cached is None:
@@ -332,7 +339,7 @@ def extract_bounded(
                     raise UnsafeContentError("Invalid vision completion-token accounting")
                 completion_tokens += used
                 save_artifact(key, {"text": str(text), "completion_tokens": used})
-                log.info(
+                log.debug(
                     "Vision extraction progress",
                     extra={
                         "event": "vision_progress",

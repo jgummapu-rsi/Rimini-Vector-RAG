@@ -46,12 +46,14 @@ def main():
         params = parse_dsn(cfg.postgres_dsn)
         schema = params["dbname"]
         with psycopg2.connect(cfg.postgres_dsn) as connection, connection.cursor() as cursor:
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated role; password is bound.
             cursor.execute(
                 sql.SQL(
                     "CREATE ROLE {} LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE"
                 ).format(sql.Identifier(role)),
                 (password,),
             )
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes database and role separately.
             cursor.execute(
                 sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
                     sql.Identifier(params["dbname"]), sql.Identifier(role)
@@ -248,12 +250,15 @@ def main():
             for volume in (blob_volume, model_volume):
                 subprocess.run(["docker", "volume", "rm", volume], capture_output=True)
             with psycopg2.connect(cfg.postgres_dsn) as connection, connection.cursor() as cursor:
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes both roles; this cleans up the generated acceptance role.
                 cursor.execute(
                     sql.SQL("REASSIGN OWNED BY {} TO {}").format(
                         sql.Identifier(role), sql.Identifier(params["user"])
                     )
                 )
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated acceptance role.
                 cursor.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes the generated acceptance role.
                 cursor.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
 
 

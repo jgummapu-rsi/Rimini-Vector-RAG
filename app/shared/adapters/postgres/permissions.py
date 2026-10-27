@@ -31,22 +31,26 @@ def apply_runtime_grants(cursor, schema: str, role: str) -> None:
     )
     for row in cursor.fetchall():
         name = row["relname"] if isinstance(row, dict) else row[0]
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- psycopg2 Identifier quotes schema, relation and role separately.
         cursor.execute(
             sql.SQL("REVOKE ALL ON {}.{} FROM {}").format(
                 sql.Identifier(schema), sql.Identifier(name), sql.Identifier(role)
             )
         )
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema and role.
     cursor.execute(
         sql.SQL("REVOKE ALL ON SCHEMA {} FROM {}").format(
             sql.Identifier(schema), sql.Identifier(role)
         )
     )
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema and role.
     cursor.execute(
         sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
             sql.Identifier(schema), sql.Identifier(role)
         )
     )
     for table in RUNTIME_TABLES:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema, allowlisted table and role.
         cursor.execute(
             sql.SQL("GRANT SELECT,INSERT,UPDATE,DELETE ON {}.{} TO {}").format(
                 sql.Identifier(schema), sql.Identifier(table), sql.Identifier(role)
@@ -59,26 +63,31 @@ def apply_runtime_grants(cursor, schema: str, role: str) -> None:
         "workspace_retrieval_vectors",
         "workspace_embedding_profiles",
     ):
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema, allowlisted table and role.
         cursor.execute(
             sql.SQL("GRANT SELECT ON {}.{} TO {}").format(
                 sql.Identifier(schema), sql.Identifier(table), sql.Identifier(role)
             )
         )
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema and role; relation is fixed.
     cursor.execute(
         sql.SQL("GRANT INSERT ON {}.workspace_embedding_profiles TO {}").format(
             sql.Identifier(schema), sql.Identifier(role)
         )
     )
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema and role; relation is fixed.
     cursor.execute(
         sql.SQL("GRANT INSERT ON {}.ingestion_generations TO {}").format(
             sql.Identifier(schema), sql.Identifier(role)
         )
     )
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema and role; relation and column are fixed.
     cursor.execute(
         sql.SQL("GRANT UPDATE(singleton) ON {}.embedding_profile TO {}").format(
             sql.Identifier(schema), sql.Identifier(role)
         )
     )
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes schema and role.
     cursor.execute(
         sql.SQL("GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(
             sql.Identifier(schema), sql.Identifier(role)

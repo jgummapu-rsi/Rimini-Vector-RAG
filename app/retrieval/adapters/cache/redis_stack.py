@@ -51,8 +51,8 @@ def _normalize(question: str) -> str:
 
 
 def _short_hash(text: str) -> str:
-    """First 16 hex chars of the SHA-1 of `text`, used as a compact key component."""
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    """SHA-256 of `text`, used to isolate question/model cache keys."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class RedisStackAnswerCache(AnswerCache):

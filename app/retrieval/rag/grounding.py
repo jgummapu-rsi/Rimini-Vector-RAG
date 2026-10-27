@@ -6,6 +6,8 @@ import re
 
 import tiktoken
 
+from app.shared.logger import measured
+
 log = logging.getLogger(__name__)
 INSUFFICIENT = "Insufficient evidence in the available documents to answer this question."
 SYSTEM = (
@@ -84,6 +86,7 @@ def generation_failure_reason(raw: str) -> str:
     return "invalid_answer_or_source_references"
 
 
+@measured("context_packing")
 def pack_evidence(
     question: str, contexts: list[str], model: str, citations: list[dict] | None = None
 ) -> tuple[list[dict], list[int]]:
@@ -179,6 +182,7 @@ def pack_evidence(
     return packed, selected
 
 
+@measured("answer_validation")
 def validate_grounded_answer(
     raw: str, evidence: dict[str, str]
 ) -> tuple[str, list[str], dict[str, str]]:

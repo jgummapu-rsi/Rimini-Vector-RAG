@@ -65,31 +65,29 @@ def extract(data: bytes, filename: str, gateway, cfg) -> list[Element]:
                 page_geometry.update(outline.get(pno, {}))
                 text = (page.extract_text() or "").strip()
                 page_elements: list[tuple[tuple[float, float], Element]] = []
-                layout_regions = []
-                if getattr(cfg, "layout_enabled", False):
-                    png = _render_page_png(render_doc, pidx, max_pixels=cfg.max_image_pixels)
-                    if hasattr(gateway, "layout"):
-                        detected = gateway.layout(png)
-                    else:
-                        detected = detect_layout(png, cfg)
-                    # PDFium renders the CropBox; pdfplumber positions are in
-                    # its rotated MediaBox coordinate system.
-                    crop = tuple(
-                        getattr(page, "cropbox", None)
-                        or getattr(page, "bbox", (0, 0, page_width, page_height))
+                png = _render_page_png(render_doc, pidx, max_pixels=cfg.max_image_pixels)
+                if hasattr(gateway, "layout"):
+                    detected = gateway.layout(png)
+                else:
+                    detected = detect_layout(png, cfg)
+                # PDFium renders the CropBox; pdfplumber positions are in
+                # its rotated MediaBox coordinate system.
+                crop = tuple(
+                    getattr(page, "cropbox", None)
+                    or getattr(page, "bbox", (0, 0, page_width, page_height))
+                )
+                layout_regions = [
+                    dict(
+                        region,
+                        bbox=(
+                            crop[0] + region["bbox"][0] * (crop[2] - crop[0]),
+                            crop[1] + region["bbox"][1] * (crop[3] - crop[1]),
+                            crop[0] + region["bbox"][2] * (crop[2] - crop[0]),
+                            crop[1] + region["bbox"][3] * (crop[3] - crop[1]),
+                        ),
                     )
-                    layout_regions = [
-                        dict(
-                            region,
-                            bbox=(
-                                crop[0] + region["bbox"][0] * (crop[2] - crop[0]),
-                                crop[1] + region["bbox"][1] * (crop[3] - crop[1]),
-                                crop[0] + region["bbox"][2] * (crop[2] - crop[0]),
-                                crop[1] + region["bbox"][3] * (crop[3] - crop[1]),
-                            ),
-                        )
-                        for region in detected
-                    ]
+                    for region in detected
+                ]
                 page_geometry["page_box"] = tuple(
                     getattr(page, "cropbox", None)
                     or getattr(page, "bbox", (0, 0, page_width, page_height))

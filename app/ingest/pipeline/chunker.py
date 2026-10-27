@@ -659,7 +659,7 @@ def _record(
 ) -> ChunkRecord:
     meta = dict(el.meta)
     source_spans = [dict(span) for span in meta.get("source_spans", [])]
-    if source_spans and el.modality == "text":
+    if source_spans and el.modality in {"text", "image"}:
         source_range = source_range or _find_source_range(el.text, text)
         if source_range:
             source_spans = _clip_source_spans(source_spans, *source_range)

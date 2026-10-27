@@ -55,7 +55,7 @@ from app.shared.domain.models import (
     Visibility,
 )
 from app.shared.ids import new_object_id
-from app.shared.observability import bind
+from app.shared.logger import bind, correlation
 
 router = APIRouter()
 log = logging.getLogger("api")
@@ -300,6 +300,11 @@ def _accept_upload(
         uploaded_by=principal.user_id,
         job_id=job.id,
     )
+    job.correlation = {
+        **correlation(),
+        "tenant_id": principal.tenant_id,
+        "user_id": principal.user_id,
+    }
     container.metadata.create_document_with_job(doc, job, initial_version)
     container.metrics.incr("ingest.accepted")
     log.info(
@@ -393,6 +398,11 @@ def _update_document(
         attempts=0,
     )
 
+    job.correlation = {
+        **correlation(),
+        "tenant_id": principal.tenant_id,
+        "user_id": principal.user_id,
+    }
     version = container.metadata.update_document_content_and_queue(
         principal.tenant_id,
         target.id,
@@ -844,17 +854,31 @@ def preview_document_version(
             blocks = []
             for body_index, child in enumerate(document.element.body.iterchildren(), 1):
                 if child.tag.endswith("}p"):
-                    value = Paragraph(child, document).text.strip()
+                    paragraph = Paragraph(child, document)
+                    value = paragraph.text.strip()
+                    style = ((paragraph.style.name if paragraph.style else "") or "").lower()
+                    match = re.match(r"heading\s*(\d+)", style)
+                    block_type = "heading" if match else "paragraph"
+                    block_meta = {"type": block_type}
+                    if match:
+                        block_meta["level"] = min(6, max(1, int(match.group(1))))
                 elif child.tag.endswith("}tbl"):
-                    value = "\n".join(
-                        "\t".join(cell.text for cell in row.cells)
-                        for row in Table(child, document).rows
-                    )
+                    rows = [
+                        [cell.text for cell in row.cells] for row in Table(child, document).rows
+                    ]
+                    value = "\n".join("\t".join(row) for row in rows)
+                    block_meta = {"type": "table", "rows": rows}
                 else:
                     value = ""
                 if value:
                     blocks.append(value)
-                    source_blocks.append({"text": value, "locator": {"body_index": body_index}})
+                    source_blocks.append(
+                        {
+                            "text": value,
+                            "locator": {"body_index": body_index},
+                            **block_meta,
+                        }
+                    )
             text = "\n\n".join(blocks)
         elif ext == ".rtf":
             text = rtf_to_text(data.decode("utf-8-sig"))
@@ -1014,6 +1038,11 @@ def reprocess(
         content_sha256=doc.content_sha256,
         version=doc.version,
     )
+    job.correlation = {
+        **correlation(),
+        "tenant_id": principal.tenant_id,
+        "user_id": principal.user_id,
+    }
     container.metadata.create_job(job)
     container.metrics.incr("reprocess.requests")
     log.info(

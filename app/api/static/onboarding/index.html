@@ -3,7 +3,7 @@
   Onboarding landing page — the first screen anyone hitting this deployment
   sees. Role choice (Developer / Business reader) -> email+password login or
   registration (POST /onboarding/register|login, provisions a tenant+admin
-  user transparently) -> an optional LiteLLM gateway config gate -> either a
+  user transparently) -> required LiteLLM validation and model selection -> either a
   Developer reference screen (endpoints + example payloads) or a redirect into
   the Document Trace UI (/ui/), already authenticated.
 
@@ -440,10 +440,20 @@ function screenAuth() {
       ${mode === "register" ? `
         <label class="lbl" for="dname">Organization name (optional)</label>
         <input id="dname" placeholder="Meridian Health Systems">
+        <div class="note">
+          <b>Connect LiteLLM before creating the first workspace.</b>
+          Enter the gateway URL and key, then load the models available to this key.
+          If the deployment is already configured, leave these fields empty and load models.
+        </div>
+        <label class="lbl" for="signupBaseUrl">LiteLLM base URL</label>
+        <input id="signupBaseUrl" type="url" placeholder="https://gateway.example.com" autocomplete="url">
+        <label class="lbl" for="signupApiKey">LiteLLM API key</label>
+        <input id="signupApiKey" type="password" placeholder="Enter the gateway key" autocomplete="off">
+        <div class="row"><button class="btn" id="loadModels" type="button">Load available models</button></div>
         <label class="lbl" for="signupChatModel">Default answer model</label>
-        <select id="signupChatModel" disabled><option>Loading gateway models…</option></select>
+        <select id="signupChatModel" disabled><option>Load gateway models first</option></select>
         <label class="lbl" for="signupEmbeddingModel">Workspace embedding model</label>
-        <select id="signupEmbeddingModel" disabled><option>Loading embedding models…</option></select>
+        <select id="signupEmbeddingModel" disabled><option>Load gateway models first</option></select>
         <p class="sub">Your team shares this embedding model for indexing and searching documents.
           This choice is fixed for the workspace. Local CPU models download only after you select
           one and create the workspace; first use may take a little longer.</p>
@@ -465,16 +475,32 @@ function screenAuth() {
     $("tabLogin").onclick = () => { mode = "login"; draw(); };
     $("back").onclick = () => screenWelcome();
     $("submit").onclick = () => submit();
-    if (mode === "register") loadSignupModels();
+    if (mode === "register") {
+      $("loadModels").onclick = () => loadSignupModels(true);
+      loadSignupModels(false);
+    }
     ["email", "password"].forEach((id) =>
       $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); }));
   }
 
-  async function loadSignupModels() {
+  async function loadSignupModels(saveGateway) {
     const chat = $("signupChatModel"), embedding = $("signupEmbeddingModel");
     $("submit").disabled = true;
+    $("loadModels").disabled = true;
+    $("modelOptionsStatus").textContent = "Checking LiteLLM and loading models…";
     try {
-      const options = await api("/onboarding/models");
+      let options;
+      const baseUrl = $("signupBaseUrl").value.trim();
+      const apiKey = $("signupApiKey").value.trim();
+      if (saveGateway || baseUrl || apiKey) {
+        if (!baseUrl || !apiKey) throw new Error("Enter both the LiteLLM base URL and API key.");
+        options = await api("/onboarding/setup-gateway", {
+          method: "POST", body: JSON.stringify({base_url: baseUrl, api_key: apiKey}),
+        });
+        $("signupApiKey").value = "";
+      } else {
+        options = await api("/onboarding/models");
+      }
       if (!chat.isConnected) return;
       for (const [select, items, selected] of [
         [chat, options.chat_models, options.default_chat_model],
@@ -486,9 +512,11 @@ function screenAuth() {
       }
       $("submit").disabled = chat.disabled || embedding.disabled;
       $("modelOptionsStatus").textContent = chat.disabled || embedding.disabled
-        ? "No compatible gateway models are available. Please contact your administrator." : "";
+        ? "No compatible gateway models are available." : "LiteLLM connected. Select the models for this workspace.";
     } catch (error) {
-      if (chat.isConnected) $("modelOptionsStatus").textContent = error.message + " Switch tabs to retry.";
+      if (chat.isConnected) $("modelOptionsStatus").textContent = error.message;
+    } finally {
+      if ($("loadModels")?.isConnected) $("loadModels").disabled = false;
     }
   }
 
@@ -519,7 +547,7 @@ function screenAuth() {
         });
         apiToken = out.api_token;
       }
-      await screenGatewayGateOrProceed();
+      proceed();
     } catch (e) {
       // §8 — describe the failure and the recovery; never blame the person.
       if (e.status === 409) {
@@ -537,65 +565,6 @@ function screenAuth() {
   }
 
   draw();
-}
-
-// ------------------------------------------------------- screen: gateway gate
-async function screenGatewayGateOrProceed() {
-  const status = await api("/onboarding/status");
-  if (status.litellm_configured) return proceed();
-  const capabilities = await api("/onboarding/capabilities", {
-    headers: { Authorization: `Bearer ${apiToken}` },
-  });
-  if (!capabilities.configure_gateway) {
-    render(`
-      <p class="eyebrow">Gateway setup pending</p>
-      <h2>Your account is ready</h2>
-      <p class="sub">A platform operator must configure the LLM gateway before answers and scanned-document extraction are available.</p>
-      <button class="btn btn-primary" id="continue" type="button">Continue</button>
-    `);
-    $("continue").onclick = proceed;
-    return;
-  }
-  screenGateway();
-}
-
-function screenGateway() {
-  render(`
-    <p class="eyebrow">One more step</p>
-    <h2>Connect your LLM gateway</h2>
-    <p class="sub">This is what generates answers (<code class="inline">/ask</code>,
-       <code class="inline">/answer</code>) and reads scanned pages with the vision model.
-       Ingesting text-native documents and searching them both run on a local embedding
-       model, so you can skip this and set it later.</p>
-    <label class="lbl" for="baseUrl">LiteLLM base URL</label>
-    <input id="baseUrl" placeholder="https://gateway.meridianhealth.com">
-    <label class="lbl" for="apiKey">LiteLLM API key</label>
-    <input id="apiKey" type="password" placeholder="sk-8f2c4a91d7e35b06">
-    <div class="row">
-      <button class="btn" id="skip" type="button">Skip for now</button>
-      <button class="btn btn-primary" id="save" type="button">Save and continue</button>
-    </div>
-    <p class="err" id="err" role="alert"></p>
-  `);
-  $("skip").onclick = () => proceed();
-  $("save").onclick = async () => {
-    const err = $("err"), btn = $("save");
-    err.textContent = "";
-    btn.disabled = true;
-    btn.textContent = "Saving…";
-    try {
-      await api("/onboarding/gateway-config", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiToken}` },
-        body: JSON.stringify({ base_url: $("baseUrl").value.trim(), api_key: $("apiKey").value.trim() }),
-      });
-      proceed();
-    } catch (e) {
-      err.textContent = e.message;
-      btn.disabled = false;
-      btn.textContent = "Save and continue";
-    }
-  };
 }
 
 // --------------------------------------------------------------------- routing

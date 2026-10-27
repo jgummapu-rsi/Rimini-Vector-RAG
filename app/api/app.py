@@ -15,11 +15,12 @@ from app.api.body_limit import BodyLimitMiddleware
 from app.api.ingest_routes import router as ingest_router
 from app.api.onboarding_routes import router as onboarding_router
 from app.api.retrieval_routes import router as retrieval_router
+from app.shared.config import settings
 from app.shared.container import Container, build_container
 from app.shared.execution import RequestAborted
 from app.shared.gateway.client import GatewayError
 from app.shared.ids import new_object_id
-from app.shared.observability import bind, configure_logging, reset
+from app.shared.logger import bind, configure_logging, reset, shutdown_logging, stage
 from app.shared.ports.metadata_store import IngestionConflict
 
 log = logging.getLogger("api")
@@ -36,13 +37,16 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        configure_logging()
+        configure_logging(
+            settings=container.settings if container else settings, service_name="rimini-rag-api"
+        )
         app.state.container = container if container is not None else build_container()
         try:
             yield
         finally:
             if container is None:
                 app.state.container.close()
+            shutdown_logging()
 
     application = FastAPI(title="RAG Ingestion Layer", version="0.1.0", lifespan=lifespan)
 
@@ -110,28 +114,41 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @application.middleware("http")
     async def _correlate(request, call_next):
-        request_id = new_object_id()
-        token = bind(request_id=request_id, method=request.method, path=request.url.path)
+        request_id = request.headers.get("x-request-id") or new_object_id()
+        session_id = request.headers.get("x-session-id") or new_object_id()
+        token = bind(
+            request_id=request_id,
+            session_id=session_id,
+            client_ip=request.client.host if request.client else "",
+            method=request.method,
+            path=request.url.path,
+        )
         quiet = request.url.path in _QUIET_PATHS or request.url.path.startswith(_QUIET_PREFIXES)
         t0 = perf_counter()
-        if not quiet:
-            log.info("request start", extra={"event": "request_start"})
         status = 500
         try:
-            response = await call_next(request)
-            status = response.status_code
-            response.headers["X-Request-ID"] = request_id
-            return response
+            with stage("request", parent=dict(request.headers), emit=False) as detail:
+                try:
+                    response = await call_next(request)
+                    status = response.status_code
+                    response.headers["X-Request-ID"] = request_id
+                    response.headers["X-Session-ID"] = session_id
+                    return response
+                finally:
+                    principal = getattr(request.state, "principal", None)
+                    if principal is not None:
+                        bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
+                    detail["http.response.status_code"] = status
+                    if not quiet:
+                        log.info(
+                            "request end",
+                            extra={
+                                "event": "request_end",
+                                "status": status,
+                                "duration_ms": (perf_counter() - t0) * 1000,
+                            },
+                        )
         finally:
-            if not quiet:
-                log.info(
-                    "request end",
-                    extra={
-                        "event": "request_end",
-                        "status": status,
-                        "duration_ms": round((perf_counter() - t0) * 1000, 1),
-                    },
-                )
             reset(token)
 
     application.include_router(ingest_router)

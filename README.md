@@ -34,7 +34,7 @@ and version history. A browser interface and REST API are included.
 On Windows, use Docker Desktop's WSL2 backend and run the shell commands below in
 WSL. On macOS, use Docker Desktop. Direct Python execution requires Linux.
 
-### 2. Get the code and configure the gateway
+### 2. Get the code
 
 ```sh
 git clone https://github.com/jgummapu-rsi/Rimini-Vector-RAG.git
@@ -42,10 +42,9 @@ cd Rimini-Vector-RAG
 cp .env.example .env
 ```
 
-Edit `.env` before starting. Supply values from your gateway administrator:
+Gateway settings may be supplied in `.env`, or entered and validated in the registration UI before the first workspace is created:
 
 ```dotenv
-COMPOSE_PROFILES=development
 LITELLM_BASE_URL=https://your-gateway.example.com
 LITELLM_API_KEY=your-gateway-api-key
 CHAT_MODEL=your-chat-model-alias
@@ -60,30 +59,17 @@ The chat/vision names shipped in `.env.example` are deployment-specific defaults
 replace them with aliases your gateway actually serves. The embedding deployment
 must support 1,536-dimensional output. Keep `.env` local; it is ignored by Git.
 
-### 3. Build the image and download the layout checkpoint
+### 3. Start the complete development stack
 
 ```sh
-docker compose build api worker
-docker compose run --rm --no-deps --user 0:0 \
-  -v "$(pwd)/models/doclayout-yolo:/download" \
-  api python -m scripts.download_doclayout --directory /download
+docker compose up -d --build
 ```
 
-The download command verifies the checkpoint's SHA-256 and saves it in
-`models/doclayout-yolo/`. It runs a one-off container using the built image; no host
-Python installation is needed. API and worker mount this directory read-only.
-
-The example enables layout detection for visual citations. If you intentionally
-disable it with `LAYOUT_ENABLED=false`, the checkpoint download is unnecessary;
-native text extraction and source citations still work without layout inference.
-
-### 4. Start and check readiness
-
-```sh
-docker compose up -d
-docker compose ps
-docker compose logs -f api worker
-```
+This starts and keeps the API, worker, PostgreSQL/pgvector, and Redis Stack services running.
+No Compose profile flag is required. Open <http://localhost:8000/>, choose **Create
+workspace**, enter the LiteLLM base URL and key if they were not placed in `.env`,
+load the available models, and select the chat and embedding models before registration.
+The first-run gateway form validates the credentials against LiteLLM `/model/info`.
 
 Wait for the API to become healthy. First startup downloads the reranker and
 tokenizers and prepares the configured embedding model. Stop following logs with
@@ -101,7 +87,7 @@ curl --fail http://localhost:8000/readyz
 | <http://localhost:8000/healthz> | Process liveness |
 | <http://localhost:8000/readyz> | Storage/cache readiness after startup preparation |
 
-The development profile starts `api`, `worker`, `postgres`, and `redis`. PostgreSQL
+The default Compose stack starts `api`, `worker`, `postgres`, and `redis`. PostgreSQL
 is available on `127.0.0.1:55433`, Redis on `127.0.0.1:56380`, and the API on
 `127.0.0.1:8000`. Containers use internal service addresses automatically.
 
@@ -122,7 +108,7 @@ The layout checkpoint lives in the host directory downloaded above.
 
 ### In the browser
 
-1. Open the home page and register. This creates a workspace and its admin account.
+1. Open the home page, validate LiteLLM, select models, and register. This creates a workspace and its admin account.
 2. Open the workspace, upload a document, and wait for its ingestion job to finish.
 3. Ask a question whose answer is in that document.
 4. Expand the citations to inspect source passages and available page highlights.
@@ -245,7 +231,6 @@ an arbitrary variable to `.env` does not automatically pass it to containers.
 | `RERANKER_PROVIDER` | `cross_encoder`; `none` disables reranking |
 | `CACHE_INDEX_NAME` | Redis answer-cache namespace, specific to the embedding profile |
 | `METADATA_EXTRACTION_ENABLED` | `true`; best-effort author/topic enrichment |
-| `LAYOUT_ENABLED` | `true` in `.env.example`; requires the downloaded checkpoint |
 | `PARSE_TIMEOUT_SECONDS` | `240`; native parser wall-time budget |
 | `DATABASE_URL`, `REDIS_URL` | Host-run storage addresses; Compose supplies internal addresses |
 | `DATA_DIR` | `data`; original uploads and extraction artifacts |
@@ -282,7 +267,7 @@ gateway values as described above. `requirements.txt` is the single dependency l
 for the app, tests, notebooks, and evaluations; installation includes those tools.
 
 ```sh
-docker compose --profile development up -d postgres redis
+docker compose up -d postgres redis
 python -m scripts.download_doclayout
 python -m scripts.init_database
 python -m uvicorn app.api.app:app --host 127.0.0.1 --port 8000
@@ -332,6 +317,65 @@ Local cross-encoder reranking -> source context -> LiteLLM answer
   `POST /documents/{document_id}/reprocess`, including after enabling layout detection.
 
 ## Development and tests
+
+### Pipeline logs and Observer
+
+`app/shared/logger.py` owns console logging, timing/cost accounting, correlation,
+and batched OTLP HTTP export. Follow `docker compose logs -f api worker` for readable text
+events at INFO level. Each real operation reports its elapsed `duration_ms`;
+`ingestion done` and `retrieval done` report total elapsed time, chunk counts,
+model-call count, token usage, and USD cost. Failed operations also report elapsed time.
+
+The ingestion flow is upload → durable job → bounded native parsing and loader
+routing/extraction (including layout/vision) → chunking → metadata LLM → embeddings
+→ publication → cache invalidation. Loader extraction includes its native parsing
+and any vision waits; these nested timings must not be added together. The historical
+route/extract/binarize queue markers do not perform separate work.
+
+Retrieval logs query embedding, cache lookup/hits, query routing/decomposition,
+hybrid search, reranking, context expansion/packing, gateway calls, answer validation,
+and cache writes. `llm_evidence` contains the complete structured evidence actually
+sent for generation, validation retries, coverage review, or quote repair. Evidence
+is logged after the existing context budget/selection, without logging truncation.
+Console output and Grafana's `Body` use the same text format, with real line breaks
+for evidence. Full IDs, counts, and timings remain structured OTLP attributes for
+filtering; request/job IDs appear beside each summary, with full correlation on
+completion. Existing historical JSON log entries are not rewritten.
+A cache hit makes no answer-generation call and therefore emits no new evidence event.
+
+To send logs and stage traces to **Observer**, start its Grafana or full platform
+profile and set these values in this project's `.env`:
+
+```dotenv
+# RAG running in Docker, Observer collector published on the host:
+OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318
+# For host-run Python use http://localhost:4318 instead.
+OTEL_EXPORTER_OTLP_HEADERS=
+```
+
+Rebuild/restart API and worker after installing the updated requirements. Export
+goes to `/v1/logs` and `/v1/traces`; Observer stores these in ClickHouse for Grafana.
+Select service `rimini-rag-api` or `rimini-rag-worker` in Grafana. Blank endpoint
+disables export. Export is batched off the request path and flushed on shutdown.
+This connects to Observer's telemetry collector, not its demo API or Langfuse API.
+
+Clients may send `X-Request-ID`, `X-Session-ID`, and W3C `traceparent`. Request/session
+IDs are returned in response headers; reuse a session ID to group multiple requests.
+Tenant/user IDs come from the authenticated principal. Job correlation is persisted
+for uploads, updates, and reprocessing, surviving worker restarts/retries. Logs also
+carry `job_id`, `document_id`, and `generation_id` where relevant. Trace IDs are
+32-character lowercase hex; span IDs are 16-character lowercase hex. Gateway calls
+forward trace context and Observer's LiteLLM session/tags headers.
+
+**Existing databases:** run `python -m scripts.init_database --schema` with the
+migration identity before deploying; this adds nullable `ingestion_jobs.correlation`.
+Development schema initialization applies it automatically.
+
+Costs use `x-litellm-response-cost` (or response `usage.cost`/`response_cost`) in USD,
+including embedding and vision calls. `known_cost_usd` sums reported costs;
+`total_cost_usd` is null if any completed call omitted billing data. Local inference
+has no provider-call charge. Totals are per execution attempt, not cumulative across
+job retries. Configure the gateway to return billing data for complete cost totals.
 
 Activate the Python environment and run the same style checks as CI:
 
@@ -442,7 +486,8 @@ disabled. Use a separate Compose project name.
    origins where required, then start:
 
 ```sh
-docker compose -p rag-production --profile production up -d --no-build
+docker compose -p rag-production --profile production up -d --no-build \
+  api-production worker-production
 ```
 
 Select only one profile; the `.env.example` default is `development`. Record the
@@ -462,7 +507,7 @@ Utilities: `scripts.migrate_embeddings`, `scripts.encrypted_backup`,
 | Symptom | Check / resolution |
 |---|---|
 | API startup fails or readiness stays unavailable | Run `docker compose logs api worker`. Confirm gateway aliases/key, PostgreSQL/Redis health, and model-download access. |
-| `Layout checkpoint missing` | Run the checkpoint download step; confirm the read-only mount. Or explicitly disable `LAYOUT_ENABLED` and recreate API/worker. |
+| `Layout checkpoint missing` | Run the checkpoint download step and confirm the read-only mount. Layout detection is always enabled. |
 | Upload stays queued | Confirm `worker` is running and using the same database and upload storage as the API. Inspect `/jobs/{job_id}/trace`. |
 | `unknown command FT...` from Redis | Use Redis Stack, not plain Redis. |
 | Embedding profile/dimension mismatch | Restore the matching configuration or run an embedding migration/re-ingestion. Changing only `.env` cannot convert stored vectors. |

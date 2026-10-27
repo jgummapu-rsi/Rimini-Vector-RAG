@@ -10,6 +10,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+from contextlib import ExitStack
 
 import pytest
 from docx import Document
@@ -19,6 +21,24 @@ from openpyxl import Workbook
 from app.shared.container import build_container
 from app.shared.domain.models import Role
 from scripts.disposable_storage import disposable_settings
+from scripts.test_services import test_services
+
+_SERVICES = pytest.StashKey[ExitStack]()
+
+
+def pytest_configure(config):
+    stack = ExitStack()
+    config.stash[_SERVICES] = stack
+    try:
+        stack.enter_context(test_services())
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        stack.close()
+        raise pytest.UsageError(f"Cannot provision test storage: {exc}") from exc
+
+
+def pytest_unconfigure(config):
+    if _SERVICES in config.stash:
+        config.stash[_SERVICES].close()
 
 
 def structured_answer(text: str, sources=("1",)) -> str:

@@ -16,7 +16,7 @@ def main():
     document.set_font("Helvetica", size=12)
     sentence = "Premium customers receive priority support during business hours. "
     document.multi_cell(0, 8, sentence * 8)
-    cfg = Settings(_env_file=None, layout_enabled=True, parse_timeout_seconds=120)
+    cfg = Settings(_env_file=None, parse_timeout_seconds=120)
     artifacts = {}
     elements, summary = extract_bounded(
         "layout-check.pdf",

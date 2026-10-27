@@ -289,6 +289,7 @@ def exercise_restore(
                     "ingestion_jobs",
                     "ingestion_generations",
                 ):
+                    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- Identifier quotes an allowlisted table; both paths are bound values.
                     cursor.execute(
                         sql.SQL("UPDATE {} SET blob_path=%s WHERE blob_path=%s").format(
                             sql.Identifier(table)

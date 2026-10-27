@@ -67,6 +67,7 @@ def main() -> None:
                 angle = index * 0.2 + 0.001
                 query = [math.cos(angle), math.sin(angle), 0.05]
                 with transaction(cfg.postgres_dsn) as cur:
+                    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- acl_pushdown returns fixed SQL fragments; tenant, ACL and vector values are bound.
                     cur.execute(
                         "WITH eligible AS MATERIALIZED (SELECT chunk_id,embedding FROM vector_chunks "
                         "WHERE tenant_id=%s AND deleted=false "
@@ -85,6 +86,7 @@ def main() -> None:
                 cur.execute("SET LOCAL hnsw.iterative_scan='strict_order'")
                 cur.execute("SET LOCAL hnsw.ef_search=400")
                 cur.execute("SET LOCAL hnsw.max_scan_tuples=20000")
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- acl_pushdown returns fixed SQL fragments; tenant, ACL and vector values are bound.
                 cur.execute(
                     "EXPLAIN (FORMAT JSON) SELECT chunk_id FROM vector_chunks "
                     "WHERE tenant_id=%s AND deleted=false "
