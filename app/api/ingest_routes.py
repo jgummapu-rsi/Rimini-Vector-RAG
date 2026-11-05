@@ -56,9 +56,10 @@ from app.shared.domain.models import (
 )
 from app.shared.ids import new_object_id
 from app.shared.logger import bind, correlation
+from app.shared.observability import trace_request
 
 router = APIRouter()
-log = logging.getLogger("api")
+log = logging.getLogger(__name__)
 
 
 @router.get("/healthz")
@@ -93,6 +94,7 @@ _INGESTABLE_VISIBILITY = (Visibility.PRIVATE.value, Visibility.TENANT.value)
 
 
 @router.post("/ingest", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(admit_request)])
+@trace_request("ingest")
 async def ingest(
     request: Request,
     file: UploadFile = File(...),
@@ -1002,6 +1004,7 @@ def render_image_frame(
 
 
 @router.post("/documents/{document_id}/reprocess", status_code=status.HTTP_202_ACCEPTED)
+@trace_request("ingest")
 def reprocess(
     document_id: str,
     principal: Principal = Depends(require_ingest),

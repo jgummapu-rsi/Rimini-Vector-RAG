@@ -99,7 +99,10 @@ def _handle_job_failure(container, job, exc: Exception, max_attempts: int) -> No
 
 
 def main() -> None:
-    configure_logging(settings=settings, service_name="rimini-rag-worker")
+    configure_logging(
+        settings=settings,
+        service_name=settings.otel_worker_service_name,
+    )
     container = build_container()
     stopped = threading.Event()
     previous = {}

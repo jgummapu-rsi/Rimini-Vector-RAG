@@ -10,7 +10,7 @@ from time import perf_counter
 from fastapi import FastAPI, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-
+from opentelemetry import trace
 from app.api.body_limit import BodyLimitMiddleware
 from app.api.ingest_routes import router as ingest_router
 from app.api.onboarding_routes import router as onboarding_router
@@ -20,13 +20,23 @@ from app.shared.container import Container, build_container
 from app.shared.execution import RequestAborted
 from app.shared.gateway.client import GatewayError
 from app.shared.ids import new_object_id
-from app.shared.logger import bind, configure_logging, reset, shutdown_logging, stage
+from app.shared.logger import (
+    bind,
+    configure_logging,
+    correlation,
+    record_http_request,
+    reset,
+    shutdown_logging,
+    stage,
+)
+from app.shared.observability import (
+    apply_request_span_attributes,
+    is_quiet_path,
+    resolve_request_trace_from_routes,
+)
 from app.shared.ports.metadata_store import IngestionConflict
 
-log = logging.getLogger("api")
-_QUIET_PATHS = {"/healthz", "/readyz", "/metrics", "/openapi.json", "/docs", "/redoc", "/"}
-
-_QUIET_PREFIXES = ("/ui",)
+log = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).with_name("static") / "trace"
 _ONBOARDING_STATIC_DIR = Path(__file__).with_name("static") / "onboarding"
 
@@ -37,8 +47,10 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        active_settings = container.settings if container else settings
         configure_logging(
-            settings=container.settings if container else settings, service_name="rimini-rag-api"
+            settings=active_settings,
+            service_name=active_settings.otel_api_service_name,
         )
         app.state.container = container if container is not None else build_container()
         try:
@@ -114,6 +126,8 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @application.middleware("http")
     async def _correlate(request, call_next):
+        app_container = getattr(request.app.state, "container", None)
+        app_settings = app_container.settings if app_container is not None else settings
         request_id = request.headers.get("x-request-id") or new_object_id()
         session_id = request.headers.get("x-session-id") or new_object_id()
         token = bind(
@@ -123,32 +137,73 @@ def create_app(container: Container | None = None) -> FastAPI:
             method=request.method,
             path=request.url.path,
         )
-        quiet = request.url.path in _QUIET_PATHS or request.url.path.startswith(_QUIET_PREFIXES)
+        quiet = is_quiet_path(
+            request.url.path,
+            quiet_paths=set(app_settings.observability_quiet_paths),
+            quiet_prefixes=tuple(app_settings.observability_quiet_prefixes),
+        )
         t0 = perf_counter()
         status = 500
+        traced = resolve_request_trace_from_routes(
+            request.app.router.routes,
+            request.method,
+            request.url.path,
+            request.url.path,
+        )
+        http_route = traced[0] if traced is not None else request.url.path
+        request_type = traced[1] if traced is not None else None
         try:
-            with stage("request", parent=dict(request.headers), emit=False) as detail:
+            with stage(
+                f"{request.method} {http_route}",
+                parent=dict(request.headers),
+                emit=False,
+                trace_span=traced is not None,
+                allow_root=traced is not None,
+                span_kind=trace.SpanKind.SERVER,
+            ) as detail:
                 try:
                     response = await call_next(request)
                     status = response.status_code
                     response.headers["X-Request-ID"] = request_id
                     response.headers["X-Session-ID"] = session_id
                     return response
+                except BaseException as exc:
+                    candidate = getattr(exc, "status_code", None)
+                    if isinstance(candidate, int):
+                        status = candidate
+                    raise
                 finally:
                     principal = getattr(request.state, "principal", None)
-                    if principal is not None:
-                        bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
-                    detail["http.response.status_code"] = status
-                    if not quiet:
-                        log.info(
-                            "request end",
-                            extra={
-                                "event": "request_end",
-                                "status": status,
-                                "duration_ms": (perf_counter() - t0) * 1000,
-                            },
-                        )
+                    user_id = principal.user_id if principal is not None else None
+                    model = request.query_params.get("model") if request.query_params else None
+                    apply_request_span_attributes(
+                        detail,
+                        component=app_settings.observability_component,
+                        http_route=http_route,
+                        method=request.method,
+                        target=request.url.path,
+                        request_type=request_type,
+                        session_id=str(correlation().get("session_id") or session_id),
+                        status_code=status,
+                        model=model,
+                        user_id=user_id,
+                    )
         finally:
+            principal = getattr(request.state, "principal", None)
+            if principal is not None:
+                bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
+            route = getattr(request.scope.get("route"), "path", None) or request.url.path
+            duration_s = perf_counter() - t0
+            record_http_request(request.method, route, status, duration_s)
+            if not quiet:
+                log.info(
+                    "request end",
+                    extra={
+                        "event": "request_end",
+                        "status": status,
+                        "duration_ms": duration_s * 1000,
+                    },
+                )
             reset(token)
 
     application.include_router(ingest_router)

@@ -15,7 +15,7 @@ import re
 from app.ingest.pipeline.prompts import METADATA_EXTRACTION_PROMPT
 from app.ingest.pipeline.tokens import count_tokens
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 TEXT_BUDGET_TOKENS = 3000
 
