@@ -29,7 +29,7 @@ import re
 
 from app.retrieval.rag.prompts import QUERY_DECOMPOSITION_PROMPT
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 MAX_SUB_QUESTIONS = 4
 

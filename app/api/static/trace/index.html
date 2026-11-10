@@ -1109,6 +1109,20 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+function randomHex(bytes) {
+  const data = new Uint8Array(bytes);
+  crypto.getRandomValues(data);
+  return Array.from(data, (v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function newTraceparent() {
+  let traceId = randomHex(16);
+  while (traceId === "00000000000000000000000000000000") traceId = randomHex(16);
+  let spanId = randomHex(8);
+  while (spanId === "0000000000000000") spanId = randomHex(8);
+  return `00-${traceId}-${spanId}-01`;
+}
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg; t.classList.add("on");
@@ -1127,6 +1141,7 @@ async function api(path, opts = {}) {
   }
   const headers = new Headers(fetchOpts.headers || {});
   headers.set("Authorization", "Bearer " + token);
+  if (!headers.has("traceparent")) headers.set("traceparent", newTraceparent());
   activeRequests.add(controller);
   try {
     const res = await fetch(path, {

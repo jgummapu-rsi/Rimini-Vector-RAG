@@ -24,8 +24,8 @@ from app.shared.domain.models import (
     Scope,
     finalize_chunks,
 )
-from app.shared.logger import log_context
 from app.shared.logger import stage as timed_stage
+from app.shared.observability import trace_from_correlation
 from app.shared.ports.vector_store import VectorPoint
 
 log = logging.getLogger(__name__)
@@ -42,23 +42,24 @@ STAGES = [
 ]
 
 
-def run_job(container: Container, job: Job) -> None:
-    with (
-        log_context(**(job.correlation or {})),
-        timed_stage(
-            "ingestion",
-            pipeline=True,
-            parent=job.correlation,
-            job_id=job.id,
-            document_id=job.document_id,
-            tenant_id=job.tenant_id,
-            generation_id=job.generation_id,
-            attempt=job.attempts,
-        ) as detail,
-    ):
-        with renewed_lease(container.queue, job, container.settings.job_lease_seconds) as check:
-            container = container.for_workspace(job.tenant_id)
-            detail.update(_run_claimed_job(container, job, check))
+@trace_from_correlation(
+    "ingestion",
+    correlation=lambda _container, job: job.correlation,
+    fields=lambda _container, job: {
+        "job_id": job.id,
+        "document_id": job.document_id,
+        "tenant_id": job.tenant_id,
+        "generation_id": job.generation_id,
+        "attempt": job.attempts,
+        "job_retry": job.attempts > 0,
+    },
+    should_trace=lambda _container, job, *, has_parent_trace: has_parent_trace and job.attempts == 0,
+    pipeline=True,
+)
+def run_job(container: Container, job: Job) -> dict:
+    with renewed_lease(container.queue, job, container.settings.job_lease_seconds) as check:
+        container = container.for_workspace(job.tenant_id)
+        return _run_claimed_job(container, job, check)
 
 
 def _run_claimed_job(container: Container, job: Job, check) -> dict:

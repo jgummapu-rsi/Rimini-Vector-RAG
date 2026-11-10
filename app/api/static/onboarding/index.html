@@ -361,6 +361,19 @@ code.inline {
 const $ = (id) => document.getElementById(id);
 let role = null;          // "developer" | "reader"
 let apiToken = null;
+function randomHex(bytes) {
+  const data = new Uint8Array(bytes);
+  crypto.getRandomValues(data);
+  return Array.from(data, (v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function newTraceparent() {
+  let traceId = randomHex(16);
+  while (traceId === "00000000000000000000000000000000") traceId = randomHex(16);
+  let spanId = randomHex(8);
+  while (spanId === "0000000000000000") spanId = randomHex(8);
+  return `00-${traceId}-${spanId}-01`;
+}
 
 /* 24x24 stroke icons, §5. Decorative, so aria-hidden + focusable=false — the
    text beside each one carries the meaning (§5: icons never carry meaning
@@ -371,7 +384,9 @@ const ICONS = {
 };
 
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  const headers = new Headers(opts.headers || {});
+  headers.set("Content-Type", "application/json");
+  if (!headers.has("traceparent")) headers.set("traceparent", newTraceparent());
   const res = await fetch(path, { ...opts, headers });
   let body = {};
   try { body = await res.json(); } catch (_e) { /* no body */ }

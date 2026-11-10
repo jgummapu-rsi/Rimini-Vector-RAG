@@ -16,17 +16,24 @@ from functools import wraps
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.propagate import extract, inject
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
 _traces = TracerProvider()
 _logs = None
-_service_name = "rimini-rag"
+_metrics = None
+_http_requests = None
+_http_duration = None
+_service_name = "unknown-service"
 _usage = contextvars.ContextVar("pipeline_usage", default=None)
 
 _STD = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()) | {
@@ -53,6 +60,19 @@ def correlation() -> dict:
     }
     inject(fields)
     return fields
+
+
+def record_http_request(method: str, route: str, status_code: int, duration_s: float) -> None:
+    """Emit bounded HTTP RED metrics when an OTLP metrics exporter is configured."""
+    if _http_requests is None or _http_duration is None:
+        return
+    attributes = {
+        "http.request.method": method,
+        "http.route": route,
+        "http.response.status_code": status_code,
+    }
+    _http_requests.add(1, attributes)
+    _http_duration.record(duration_s, attributes)
 
 
 def gateway_headers() -> dict:
@@ -89,16 +109,36 @@ class Usage:
 
 
 @contextmanager
-def stage(name: str, *, logger=None, pipeline=False, parent=None, emit=True, **fields):
-    """One completion event per real operation, including failures and elapsed time."""
+def stage(
+    name,
+    *,
+    logger=None,
+    pipeline=False,
+    parent=None,
+    emit=None,
+    trace_span=True,
+    allow_root=False,
+    span_kind=trace.SpanKind.INTERNAL,
+    **fields,
+):
+    """Trace one operation; log pipeline boundaries and failures, not successful internals."""
     logger = logger or logging.getLogger("pipeline")
     owner = pipeline and _usage.get() is None
     usage_token = _usage.set(Usage()) if owner else None
     token = bind(stage=name, **fields)
     started = time.perf_counter()
     details = {}
-    with _traces.get_tracer("rimini-rag").start_as_current_span(
-        name, context=extract(parent) if parent else None
+    span_context = extract(parent) if parent else None
+    parent_span = trace.get_current_span(span_context).get_span_context()
+    create_span = trace_span and (allow_root or parent_span.is_valid)
+    with (
+        _traces.get_tracer(_service_name).start_as_current_span(
+            name,
+            context=span_context,
+            kind=span_kind,
+        )
+        if create_span
+        else _null_span()
     ) as span:
         status = "ok"
         try:
@@ -106,16 +146,18 @@ def stage(name: str, *, logger=None, pipeline=False, parent=None, emit=True, **f
         except BaseException as exc:
             status = "error"
             details["error_type"] = type(exc).__name__
-            span.set_status(trace.Status(trace.StatusCode.ERROR, type(exc).__name__))
+            if create_span:
+                span.set_status(trace.Status(trace.StatusCode.ERROR, type(exc).__name__))
             raise
         finally:
             details.update(duration_ms=(time.perf_counter() - started) * 1000, status=status)
             if owner:
                 details.update(_usage.get().summary())
-            for key, value in {**(_ctx.get() or {}), **details}.items():
-                if isinstance(value, (str, int, float, bool)):
-                    span.set_attribute(key, value)
-            if emit:
+            if create_span:
+                for key, value in {**(_ctx.get() or {}), **details}.items():
+                    if isinstance(value, (str, int, float, bool)):
+                        span.set_attribute(key, value)
+            if status == "error" or (pipeline if emit is None else emit):
                 logger.log(
                     logging.INFO if status == "ok" else logging.ERROR,
                     f"{name} {'done' if status == 'ok' else 'failed'}",
@@ -206,7 +248,7 @@ def record_usage(data: dict, headers, model: str, duration_ms: float):
 
 
 def log_evidence(messages):
-    """Log the actual packed evidence for each call, including retries and quote repair."""
+    """Log evidence volume without exporting retrieved document content."""
     for message in messages:
         if message.get("role") != "user" or not isinstance(message.get("content"), str):
             continue
@@ -216,11 +258,10 @@ def log_evidence(messages):
             continue
         if isinstance(payload, dict) and isinstance(payload.get("evidence"), list):
             logging.getLogger("app.retrieval.rag.query").info(
-                "LLM evidence",
+                "LLM evidence prepared",
                 extra={
-                    "event": "llm_evidence",
+                    "event": "llm_evidence_prepared",
                     "chunks": len(payload["evidence"]),
-                    "evidence": payload["evidence"],
                 },
             )
 
@@ -264,6 +305,11 @@ def reset(token) -> None:
 
 
 @contextmanager
+def _null_span():
+    yield None
+
+
+@contextmanager
 def log_context(**fields):
     """Bind `fields` into the log context for the duration of the `with` block, then reset."""
     token = bind(**fields)
@@ -289,143 +335,84 @@ class _ContextFilter(logging.Filter):
 
 
 class TextFormatter(logging.Formatter):
-    """Compact summaries; evidence is rendered verbatim, never escaped or shortened.
-
-    Full correlation stays on the record for OTLP filtering. Show the request/job
-    on each summary and the trace on completion so console readers can follow a run.
-    """
+    """Compact single-line logs for terminals; OTLP retains structured attributes."""
 
     @staticmethod
     def _value(value):
         if value is None:
             return "unknown"
         if isinstance(value, bool):
-            return "yes" if value else "no"
-        if isinstance(value, dict):
-            return ", ".join(f"{k}: {TextFormatter._value(v)}" for k, v in value.items())
-        if isinstance(value, (list, tuple)):
-            return ", ".join(TextFormatter._value(v) for v in value) or "none"
+            return "true" if value else "false"
+        if isinstance(value, (dict, list, tuple)):
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if isinstance(value, float):
-            return f"{value:.6g}"
+            return f"{value:.3f}"
         return str(value)
 
+    @classmethod
+    def _field(cls, key, value) -> str:
+        rendered = cls._value(value)
+        if any(char.isspace() for char in rendered) or '"' in rendered:
+            return f"{key}={json.dumps(rendered, ensure_ascii=False)}"
+        return f"{key}={rendered}"
+
     def format(self, record: logging.LogRecord) -> str:
-        timestamp = datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[
-            :-3
-        ]
-        component = getattr(record, "stage", record.name.rsplit(".", 1)[-1])
-        parts = [f"{timestamp}Z", f"{record.levelname:<7}", component, record.getMessage()]
-        if hasattr(record, "duration_ms"):
-            parts.append(f"{record.duration_ms:,.3f} ms")
-        for key in (
-            "chunks",
-            "vectors",
-            "candidates",
-            "model",
-            "input_tokens",
-            "output_tokens",
-            "llm_calls",
-            "cost_usd",
-            "total_cost_usd",
-        ):
-            if hasattr(record, key):
-                value = getattr(record, key)
-                rendered = (
-                    f"${value:.8f}"
-                    if key.endswith("cost_usd") and value is not None
-                    else self._value(value)
-                )
-                parts.append(f"{key.replace('_', ' ')}={rendered}")
-        for key in ("job_id", "request_id"):
-            if getattr(record, key, None):
-                parts.append(f"{key.removesuffix('_id')}={getattr(record, key)}")
-        lines = [" | ".join(parts)]
+        timestamp = datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        stage = getattr(record, "stage", record.name.rsplit(".", 1)[-1])
+        parts = [f"{timestamp}Z", f"{record.levelname:<7}", stage]
+        if trace_id := getattr(record, "trace_id", None):
+            parts.append(f"trace_id={trace_id}")
+        if record.levelno >= logging.ERROR and (span_id := getattr(record, "span_id", None)):
+            parts.append(f"span_id={span_id}")
+        parts.append(record.getMessage())
         hidden = _STD | {
-            "stage",
-            "event",
-            "duration_ms",
             "service_name",
             "traceparent",
             "tracestate",
             "trace_id",
             "span_id",
-            "request_id",
-            "session_id",
-            "tenant_id",
-            "user_id",
-            "client_ip",
-            "job_id",
-            "document_id",
-            "generation_id",
-            "role",
             "evidence",
-            "chunks",
-            "vectors",
-            "candidates",
-            "model",
-            "input_tokens",
-            "output_tokens",
-            "llm_calls",
-            "cost_usd",
-            "total_cost_usd",
         }
-        details = [
-            f"{key.replace('_', ' ')}={self._value(value)}"
+        fields = [
+            self._field(key, value)
             for key, value in record.__dict__.items()
             if key not in hidden and not key.startswith("_") and value is not None
         ]
-        if details:
-            lines.append("  " + " | ".join(details))
-        if getattr(record, "event", "") in {"pipeline_done", "request_end"}:
-            ids = [
-                f"{key}={getattr(record, key)}"
-                for key in (
-                    "trace_id",
-                    "session_id",
-                    "tenant_id",
-                    "user_id",
-                    "document_id",
-                    "generation_id",
-                )
-                if getattr(record, key, None)
-            ]
-            if ids:
-                lines.append("  " + " | ".join(ids))
-        evidence = getattr(record, "evidence", None)
-        if isinstance(evidence, list):
-            lines.append("  BEGIN LLM EVIDENCE")
-            for entry in evidence:
-                if isinstance(entry, dict):
-                    metadata = " | ".join(
-                        f"{k.replace('_', ' ')}={self._value(v)}"
-                        for k, v in entry.items()
-                        if k != "text"
-                    )
-                    lines.append(f"  Source: {metadata}" if metadata else "  Source:")
-                    lines.append(str(entry.get("text", "")))
-                else:
-                    lines.append(str(entry))
-            lines.append("  END LLM EVIDENCE")
+        if fields:
+            parts.append(" ".join(fields))
         if record.exc_info:
-            lines.append(self.formatException(record.exc_info))
-        return "\n".join(lines)
+            parts.append(self._field("exception", self.formatException(record.exc_info)))
+        return " | ".join(parts)
 
 
 def configure_logging(
-    level: int = logging.INFO, *, settings=None, service_name="rimini-rag"
+    level: int = logging.INFO, *, settings=None, service_name=None
 ) -> None:
-    """Configure text stderr and optional batched Observer OTLP transport."""
-    global _logs, _traces, _service_name
+    """Configure JSON stderr and optional batched OTLP logs and traces."""
+    global _logs, _metrics, _traces, _service_name, _http_requests, _http_duration
     shutdown_logging()
-    _service_name = service_name
+    resolved_service_name = (
+        service_name
+        or getattr(settings, "otel_service_name", None)
+        or "unknown-service"
+    )
+    _service_name = resolved_service_name
+    sample_arg = getattr(settings, "otel_traces_sampler_arg", "0.1")
+    try:
+        sample_ratio = float(sample_arg)
+    except (TypeError, ValueError):
+        sample_ratio = 0.1
+    sample_ratio = min(1.0, max(0.0, sample_ratio))
     resource = Resource.create(
         {
-            "service.name": service_name,
-            "service.namespace": "rimini",
+            "service.name": resolved_service_name,
             "deployment.environment.name": getattr(settings, "app_env", "local"),
         }
     )
-    _traces = TracerProvider(resource=resource)
+    _traces = TracerProvider(
+        resource=resource,
+        sampler=ParentBased(root=TraceIdRatioBased(sample_ratio)),
+    )
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(TextFormatter())
     handler.addFilter(_ContextFilter())
@@ -436,6 +423,9 @@ def configure_logging(
         logging.getLogger(name).setLevel(logging.WARNING)
     endpoint = getattr(settings, "otel_exporter_otlp_endpoint", "")
     if endpoint:
+        protocol = getattr(settings, "otel_exporter_otlp_protocol", "http/protobuf")
+        if protocol != "http/protobuf":
+            raise ValueError("This application exports OTLP over HTTP/protobuf")
         headers = dict(
             item.strip().split("=", 1)
             for item in settings.otel_exporter_otlp_headers.split(",")
@@ -450,7 +440,9 @@ def configure_logging(
             )
         )
         transport = LoggingHandler(logger_provider=_logs)
-        transport.setFormatter(TextFormatter())
+        # OTLP already exports LogRecord fields as attributes. Keep the body
+        # readable instead of duplicating those attributes as a JSON string.
+        transport.setFormatter(logging.Formatter("%(message)s"))
         transport.addFilter(_ContextFilter())
         # Do not feed exporter failures back into the failing exporter.
         transport.addFilter(lambda record: record.name.startswith(("app.", "api", "pipeline")))
@@ -462,11 +454,38 @@ def configure_logging(
                 )
             )
         )
+        _metrics = MeterProvider(
+            resource=resource,
+            metric_readers=[
+                PeriodicExportingMetricReader(
+                    OTLPMetricExporter(
+                        endpoint=endpoint.rstrip("/") + "/v1/metrics", headers=headers, timeout=5
+                    ),
+                    export_interval_millis=getattr(settings, "otel_metric_export_interval", 15000),
+                )
+            ],
+        )
+        meter = _metrics.get_meter(_service_name)
+        _http_requests = meter.create_counter(
+            "http.server.request.count",
+            unit="{request}",
+            description="Number of HTTP requests completed by the API.",
+        )
+        _http_duration = meter.create_histogram(
+            "http.server.request.duration",
+            unit="s",
+            description="Duration of HTTP requests handled by the API.",
+        )
 
 
 def shutdown_logging():
-    global _logs
+    global _logs, _metrics, _http_requests, _http_duration
     if _logs is not None:
         _logs.shutdown()
         _logs = None
+    if _metrics is not None:
+        _metrics.shutdown()
+        _metrics = None
+    _http_requests = None
+    _http_duration = None
     _traces.shutdown()

@@ -18,9 +18,10 @@ from app.shared.container import Container
 from app.shared.domain.models import Principal
 from app.shared.gateway.client import GatewayError
 from app.shared.logger import bind
+from app.shared.observability import set_current_span_attributes, trace_request
 
 router = APIRouter()
-log = logging.getLogger("api")
+log = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
@@ -158,6 +159,7 @@ def _allowed_model(container: Container, requested: str | None) -> str:
 
 
 @router.post("/query", dependencies=[Depends(admit_request)])
+@trace_request("query")
 def query(
     req: QueryRequest,
     principal: Principal = Depends(get_principal),
@@ -203,6 +205,7 @@ def query(
 
 
 @router.post("/ask", dependencies=[Depends(admit_request)])
+@trace_request("ask")
 def ask(
     req: AskRequest,
     principal: Principal = Depends(get_principal),
@@ -214,6 +217,7 @@ def ask(
     `/answer`."""
     container = container.for_workspace(principal.tenant_id)
     model = _allowed_model(container, req.model)
+    set_current_span_attributes({"rag.model": model})
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
     log.info(
         "ask scope",
@@ -272,6 +276,7 @@ def ask(
 
 
 @router.post("/answer", dependencies=[Depends(admit_request)])
+@trace_request("answer")
 def answer(
     req: AnswerRequest,
     principal: Principal = Depends(get_principal),
@@ -283,6 +288,7 @@ def answer(
     just an abuse/cost guard, same as `/query`)."""
     container = container.for_workspace(principal.tenant_id)
     model = _allowed_model(container, req.model)
+    set_current_span_attributes({"rag.model": model})
     bind(tenant_id=principal.tenant_id, user_id=principal.user_id)
     container.metrics.incr("answer.requests")
     t0 = perf_counter()

@@ -23,7 +23,7 @@ import re
 
 from app.retrieval.ports.reranker import Reranker
 
-log = logging.getLogger("llm_reranker")
+log = logging.getLogger(__name__)
 
 _PROMPT_TEMPLATE = """You are scoring how relevant each passage is to a search query, for the purpose of ranking search results.
 

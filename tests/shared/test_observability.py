@@ -7,16 +7,28 @@ from app.shared.ids import new_object_id
 from app.shared.logger import TextFormatter, correlation, log_context, stage
 
 
-def test_text_formatter_shows_stage_timing_and_job():
+def test_text_formatter_emits_compact_single_line_text():
     rec = logging.LogRecord("pipeline", logging.INFO, __file__, 10, "stage complete", (), None)
     rec.event = "stage"
     rec.job_id = "j1"
     rec.stage = "embed"
     rec.duration_ms = 12.3
     out = TextFormatter().format(rec)
-    assert "INFO" in out and "embed | stage complete | 12.300 ms" in out
-    assert "job=j1" in out
-    assert not out.startswith("{")
+    assert "\n" not in out
+    assert " | INFO    | embed | stage complete | " in out
+    assert "event=stage" in out
+    assert "duration_ms=12.300" in out
+    assert "job_id=j1" in out
+
+
+def test_text_formatter_places_trace_context_before_message():
+    rec = logging.LogRecord("pipeline", logging.ERROR, __file__, 10, "embedding failed", (), None)
+    rec.stage = "embed"
+    rec.trace_id = "a" * 32
+    rec.span_id = "b" * 16
+    out = TextFormatter().format(rec)
+    assert " | ERROR   | embed | trace_id=" + "a" * 32 in out
+    assert " | span_id=" + "b" * 16 + " | embedding failed" in out
 
 
 def test_metrics_incr_and_snapshot(container):
@@ -86,7 +98,7 @@ def test_job_correlation_survives_queue_claim(container, tenant, files):
     with log_context(
         request_id="upload-request", session_id="upload-session", tenant_id=tenant["id"]
     ):
-        with stage("upload", emit=False):
+        with stage("request", emit=False, trace_span=True, allow_root=True):
             fields = correlation()
     job = Job(new_object_id(), doc.id, doc.tenant_id, "parse", "queued", 0, correlation=fields)
     container.metadata.create_document_with_job(doc, job)

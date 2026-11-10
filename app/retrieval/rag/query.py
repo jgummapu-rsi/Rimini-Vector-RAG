@@ -97,7 +97,7 @@ def _retrieve(
     if qvec is None:
         with stage("query_embedding", logger=log):
             qvec = container.embedder.embed_query(question)
-    with stage("hybrid_search", logger=log) as detail:
+    with stage("retrieve_documents", logger=log, emit=False, top_k=top_k) as detail:
         hits = container.vectors.search(
             tenant_id, qvec, top_k=_fetch_k(container, top_k), access=access, query_text=question
         )
@@ -260,7 +260,10 @@ def _rerank(
         return hits, []
     if container.reranker is None:
         return hits[:top_k], [h.score for h in hits[:top_k]]
-    scores = container.reranker.score(question, [h.payload.get("content", "") for h in hits])
+    with stage(
+        "rerank_documents", logger=log, emit=False, candidates=len(hits), top_k=top_k
+    ):
+        scores = container.reranker.score(question, [h.payload.get("content", "") for h in hits])
     order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)[:top_k]
     min_score = (
         container.settings.rerank_min_score if min_score_override is None else min_score_override
@@ -570,7 +573,10 @@ def generate_answer_from_chunks(
             "References to 'this document' or 'this image' refer to that evidence; "
             "answer only what it supports."
         )
-    raw = container.gateway.chat(messages, model=resolved_model).strip()
+    with stage(
+        "llm_generate", logger=log, emit=False, model=resolved_model, evidence_chunks=len(packed)
+    ):
+        raw = container.gateway.chat(messages, model=resolved_model).strip()
     check_execution()
     answer, used, quotes = validate_grounded_answer(
         raw, {entry["source_id"]: entry["text"] for entry in packed}

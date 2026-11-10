@@ -76,8 +76,31 @@ class Settings(BaseSettings):
         return init_settings, mounted_secrets, env_settings, dotenv_settings, file_secret_settings
 
     app_env: str = "production"
+    otel_service_name: str = ""
+    otel_api_service_name: str = ""
+    otel_worker_service_name: str = ""
+    otel_exporter_otlp_protocol: str = "http/protobuf"
+    otel_traces_sampler_arg: str = "1.0"
+    otel_metric_export_interval: int = Field(default=15000, ge=1000)
     otel_exporter_otlp_endpoint: str = ""
     otel_exporter_otlp_headers: str = ""
+    observability_component: str = "rag"
+    observability_quiet_paths: list[str] = [
+        "/health",
+        "/healthz",
+        "/ready",
+        "/readyz",
+        "/livez",
+        "/liveness",
+        "/readiness",
+        "/metrics",
+        "/favicon.ico",
+        "/openapi.json",
+        "/docs",
+        "/redoc",
+        "/",
+    ]
+    observability_quiet_prefixes: list[str] = ["/ui"]
 
     data_dir: Path = Path("data")
 

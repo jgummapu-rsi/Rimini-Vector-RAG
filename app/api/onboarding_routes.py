@@ -41,7 +41,7 @@ from app.shared.gateway.client import GatewayError
 from app.shared.ports.metadata_store import EmailAlreadyRegistered
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
-log = logging.getLogger("onboarding")
+log = logging.getLogger(__name__)
 
 
 def _client_ip(request: Request) -> str:
